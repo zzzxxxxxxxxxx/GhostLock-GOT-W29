@@ -68,19 +68,50 @@ waiter_tid`）→ `task_blocks_on_rt_mutex` 中 `owner == task` → `-EDEADLK`�
 - PAGE_OFFSET=0xffffffc000000000, PHYS_OFFSET=0x80000000 (kona),
   KIMAGE_TEXT_BASE=0xffffff8008080000
 
-## 未解决的阻塞
+## 阻塞与修复（2026-08-10 更新）
 
-**Overlay：无法在内核栈放置有效的内核 lock 指针**（fake waiter 需
-`lock@0x38` 为有效内核 rt_mutex）：
+### 真正根因：EDEADLK 触发走错子路径（先于 overlay）
 
-| 方案 | 阻塞 |
-|---|---|
-| pselect | 本设备布局 shift=12，waiter words 3-10 落 res_* 清零区 |
-| sendmsg iovstack | iovec 校验拒绝内核地址（iov_len 巨大值→EFAULT, iov_base 必须用户指针, PAN 阻止） |
-| prctl(35) | 需 CAP_SYS_RESOURCE（shell 无） |
+boot.elf 反汇编 `task_blocks_on_rt_mutex` 实锤：本设备内核在 0x3808-0x3868 处
+有**提前 `owner==task` 检查**（`cmp owner,task; b.eq -> -EDEADLK`），它在
+`task->pi_blocked_on` 写入（0x38d4 `str x21,[x20,#0xa90]`）**之前**返回。
+GOT-W29 旧触发让 waiter 自持 `futex2=waiter_tid`（self-own）→ 恰好命中该提前
+检查 → **从不设置 pi_blocked_on → 无悬空指针**。设备观察（无崩溃 + boot_id 不变）
+完全符合"无悬空"——overlay 放置是误诊。
 
-参考实现（smt878u, 4.19.113）能工作因其 pselect 布局有利 + host 注入内核
-fake_lock。本设备需新 overlay gadget 或 IonStack 堆整理。
+**正确触发（smt878u 参考，已实施）**：PI 环——owner `FUTEX_LOCK_PI(target)` 持有
+requeue 目标；waiter 持 chain futex；owner 再阻塞在 chain（环：waiter→target→
+owner→chain→waiter）。requeue 时链走检测 `rt_mutex_owner(chain)==top_task`
+（rtmutex step[6]）→ `-EDEADLK` → 回滚 `remove_waiter` 用 requeuer 的 `current`
+清错人 → **waiter 的 pi_blocked_on 悬空**。owner 需降优先级（nice=10）使 boost 后
+prio 与 owner_waiter->prio 不同，否则 `rt_mutex_waiter_equal` 早退。
+
+### Overlay 修复（已实施）
+
+shift=12 下 fake waiter 的 words 6-7（task/lock）落在 res_in[3..4]（内核清零区）。
+利用 do_select 语义：`res_in[i] = in[i] & POLLIN-ready`。将 SLIDE_INIT_TASK /
+fake_lock 写入 in[3]/in[4]，并把对应 fd 全部 dup2 到"有数据的 pipe 读端"（永远
+EPOLLIN-ready）→ res_in[3]=init_task、res_in[4]=fake_lock 精确编码。words 3-5
+(pi_tree) 与 8-10 可为零（ownerless-lock 路径不用 pi_tree；prio/deadline 由内核在
+step[7] 覆写）。pselect 因 ready fd 立即返回 → waiter **用户态忙等**（禁信号、零
+syscall，防内核栈复用清掉 fake waiter）直到 consumer 触发完成。11-word HW_FUTEX_PI
+表、双 fd 类、父进程等待超时均已实现（git diff）。
+
+### 遗留次要问题（设计 agent 标注，未阻塞 overlay）
+
+- boot_id 泄漏值是**常数 direct-map 别名**（`*(boot_id)=DM(loggers[0][1])`），
+  `stext=leaked-p0_alias_image_offset(NFULNL_LOGGER)` 与 DM(_stext) 有 off-by；
+  root 阶段若全程走 physmap（DM 空间）则自洽，否则需改用 perf_event_open 的运行时
+  slide（rish 下可用）。
+- 写形状：smt878u 走 pi_tree（dequeue_pi），GOT-W29 ownerless 路径只用 tree
+  （rt_mutex_dequeue）——本次修复用 tree 形状（tree_pc=LOGGERS, tree_left=BOOT_ID）。
+
+### 实机验证（需 rish）
+
+1. `tools/cycle_probe`（已编译）：廉价验证 cycle EDEADLK 触发；EDEADLK 后对 waiter
+   sched_setattr 若触发 consumer oops = 悬空存在 + overlay 落地。
+2. 完整 exploit：`build_tools/deploy_test.sh` 部署，看 slide-kaslr-ok 或 consumer oops。
+3. 次要阻塞：泄漏算术用 perf slide 校准。
 
 ## 目录
 
