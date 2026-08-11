@@ -31,7 +31,7 @@
 #define SLIDE_NFULNL_LOGGER_IMAGE 0xffffff800b4123f0ULL
 #define SLIDE_NF_LOGGERS_IMAGE 0xffffff800b412318ULL    /* loggers[NFPROTO][NF_LOG_TYPE_MAX] */
 #define SLIDE_LOGGERS_0_1_IMAGE 0xffffff800b412320ULL   /* loggers + 1*8 = &loggers[0][1] */
-#define SLIDE_RANDOM_BOOT_ID_DATA_IMAGE 0xffffff800b1f8300ULL  /* &boot_id_ctl_table.data (redirect target) */
+#define SLIDE_RANDOM_BOOT_ID_DATA_IMAGE 0xffffff800b7f8b64ULL  /* sysctl_bootid[16] (drivers/char/random.c; symtab-verified) */
 #define SLIDE_INIT_TASK_IMAGE 0xffffff800b41e100ULL
 #define SLIDE_ROOT_TASK_GROUP_IMAGE 0xffffff800b756d80ULL
 
