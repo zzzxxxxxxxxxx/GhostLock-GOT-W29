@@ -14,7 +14,7 @@
  *                                                      -> orig_waiter == arg4
  *   __arm64_sys_sched_setattr(regs)                    -> trigger marker
  *
- * Waiter layout (GOT-W29 HW_FUTEX_PI, from target/got_w29_target.h):
+ * Waiter layout (GOT-W29 HW_FUTEX_PI, from src/target.h):
  *   +0x00 tree, +0x18 pi_tree, +0x30 task, +0x38 lock,
  *   +0x40 major, +0x48 prio, +0x50 deadline
  */

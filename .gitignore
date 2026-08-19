@@ -3,19 +3,6 @@ firmware/
 *.log
 *.tmp.*
 work/
-# compiled probe/tool binaries (rebuild from the adjacent .c)
-build_tools/affinity_probe
-build_tools/affso.so
-build_tools/edeadlk_probe
-build_tools/exit_test
-build_tools/exitso.so
-build_tools/overlay_test
-build_tools/perf_kaslr
-build_tools/probe
-build_tools/procmem_probe
-build_tools/stdin_test
-tools/cycle_probe
-tools/app_env_probe
-tools/pagemap_probe
+# compiled tool binaries (rebuild from the adjacent .c)
 tools/perf_kaslr
 tools/perfdata
