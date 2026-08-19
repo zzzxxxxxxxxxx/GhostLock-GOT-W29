@@ -86,7 +86,7 @@ boot.elf 反汇编实测。
 
 ### 完整偏移
 
-见 `target/got_w29_target.h`。要点：
+见 `exploit/ghostlock-source/src/target.h`。要点：
 
 - task_struct: cred=0x988, prio=0x184, pi_blocked_on=0xa90, usage=0x68, mm=0x728
 - rt_mutex_waiter (HW_FUTEX_PI): tree@0x0, pi_tree@0x18, task@0x30, lock@0x38,
