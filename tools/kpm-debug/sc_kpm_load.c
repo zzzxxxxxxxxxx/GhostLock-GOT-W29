@@ -16,6 +16,7 @@
 
 #define SUPERCALL_KPM_LOAD 0x1020
 #define SUPERCALL_KPM_UNLOAD 0x1021
+#define SUPERCALL_KPM_CONTROL 0x1022
 #define SUPERCALL_KPM_NUMS 0x1030
 #define SUPERCALL_KPM_LIST 0x1031
 
@@ -35,6 +36,19 @@ int main(int argc, char **argv)
     const char *path = argc > 2 ? argv[2] : "/sdcard/Download/rtmutex-dbg.kpm";
     const char *args = argc > 3 ? argv[3] : "";
     long rc;
+
+    if (argc >= 2 && strcmp(argv[1], "ctl") == 0) {
+        const char *name = argc > 2 ? argv[2] : "rtmutex-dbg";
+        const char *ctl_args = argc > 3 ? argv[3] : "";
+        key = argc > 4 ? argv[4] : "su";
+        char buf[4096] = {0};
+        rc = syscall(__NR_supercall, key,
+                     ver_and_cmd(key, SUPERCALL_KPM_CONTROL),
+                     name, ctl_args, buf, sizeof(buf));
+        printf("ctl(%s, %s) rc=%ld out=[%.200s]\n",
+               name, ctl_args, rc, buf);
+        return 0;
+    }
 
     if (argc >= 2 && strcmp(argv[1], "unload") == 0) {
         const char *name = argc > 2 ? argv[2] : "rtmutex-dbg";
