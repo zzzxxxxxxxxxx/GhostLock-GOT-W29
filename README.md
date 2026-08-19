@@ -224,7 +224,7 @@ adb shell 'su -c "sh /sdcard/ghostlock-test/set_debug_no_reboot.sh"'  # 防重�
 ## 目录
 
 ```
-tools/      验证工具（perf KASLR, EDEADLK 探针, overlay 测试, KPM 工具链）
+tools/      验证工具（perf KASLR, EDEADLK 探针, KPM 工具链）
 target/     全部实测偏移
 exploit/    移植的 slide.c（含 EDEADLK 触发改动）
 ```
