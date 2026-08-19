@@ -84,9 +84,9 @@ slide boot_id_leaked_nfulnl_logger value=ffffffa7c4612320
 slide-kaslr-ok base=ffffffa7c1280000 slide=00000027b9200000
 ```
 
-## 根因与正确触发
+## EDEADLK 触发修正
 
-### 真正根因：EDEADLK 触发走错子路径（先于 overlay）
+### 旧触发失败原因：命中提前 owner==task 检查
 
 boot.elf 反汇编 `task_blocks_on_rt_mutex` 实锤：本设备内核在 0x3808-0x3868 处
 有**提前 `owner==task` 检查**（`cmp owner,task; b.eq -> -EDEADLK`），它在
@@ -95,7 +95,9 @@ GOT-W29 旧触发让 waiter 自持 `futex2=waiter_tid`（self-own）→ 恰好�
 检查 → **从不设置 pi_blocked_on → 无悬空指针**。设备观察（无崩溃 + boot_id 不变）
 完全符合"无悬空"——overlay 放置是误诊。
 
-**正确触发（smt878u 参考，已实施）**：PI 环——owner `FUTEX_LOCK_PI(target)` 持有
+### 正确触发方案：PI 环（smt878u 参考，已实施）
+
+PI 环——owner `FUTEX_LOCK_PI(target)` 持有
 requeue 目标；waiter 持 chain futex；owner 再阻塞在 chain（环：waiter→target→
 owner→chain→waiter）。requeue 时链走检测 `rt_mutex_owner(chain)==top_task`
 （rtmutex step[6]）→ `-EDEADLK` → 回滚 `remove_waiter` 用 requeuer 的 `current`
