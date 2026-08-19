@@ -117,3 +117,30 @@ pselect 的 res_in[4] 被确定性覆盖；ppoll 的 pollfd 数组在栈的深�
 若避开返回路径帧则 words 可用 pollfd.events（用户可控）承载。`do_poll`
 符号在 GOT-W29 kallsyms 缺失（验证工具受限），需直接实现 ppoll overlay
 并实测 pollfd 数组 vs rt_waiter 的栈几何是否重叠。
+
+### 结论（2026-08-19 最终）：ppoll 载体编码层面不可行
+
+boot.elf 反汇编 `__arm64_sys_ppoll` / `do_sys_poll`（0xffffff80083070c0 /
+0xffffff8008307c18，栈帧 0x90+0x3a0）后确认：**pollfd 是 16 字节结构**
+（fd 4B + events 4B + revents 4B + pad 4B），无法承载 fake waiter 的
+64 位 task/lock words：
+
+- task/lock 需要**连续 8 字节用户可控**；pollfd 的 fd 值受限（必须真实
+  fd），events 只有 4 字节且每 16 字节一个（不连续），revents 由内核写
+  （不可控，类似 res_in）。
+
+**GOT-W29（4.19）真实攻击确认不可行**（两个确定性死结）：
+
+1. pselect 载体的 `res_in[4]`（lock）被返回路径（rt_sigreturn 帧）确定性
+   覆盖，用户态无法防（FP+sched_yield 只降触发率）。
+2. ppoll 载体的 pollfd 结构在编码层面无法承载 64 位 words。
+
+smt878u / popsicle 可行是因为它们的栈几何允许 words 落在用户可控的
+in/out/ex（pselect 3 个 fd_set），GOT-W29 的 waiter 位置（bits+0x60 →
+task/lock 在 res_in[3]/[4]）没有该窗口。
+
+**研究价值已完整**：CVE-2026-43499 写原语机制在 GOT-W29 实机验证（KPM
+辅助：boot_id 改写、slide-kaslr-ok），根因链（EDEADLK → 悬空 pi_blocked_on
+→ fake waiter → step[7] rb_erase 写原语）与"为什么 GOT-W29 卡住 / 为什么
+其他设备可以"的对比分析完整，调试工具链（rtmutex-dbg KPM + supercall 工具
++ 测试脚本）可复用。
