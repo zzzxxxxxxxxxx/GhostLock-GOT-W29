@@ -29,16 +29,18 @@ sleep 1
   POC_LOG_FILE="$DST/rtmdbg_poc.log" \
   GOT_FULL_RUN=1 \
   GOT_VERIFY_WRITE=1 \
-  GOT_SLIDE_ATTEMPTS=5 \
+  GOT_SLIDE_ATTEMPTS=1 \
   GOT_SLIDE_NO_RT=1 \
-  GOT_FAKELOCK_BSS=1 \
   ./ghostlock_exe > "$DST/rtmdbg_exe.log" 2>&1
 ) &
 EXE_PID=$!
 
 echo "started ghostlock_exe pid=$EXE_PID $(date +%T)"
 sleep 90
-killall ghostlock_exe 2>/dev/null
+# SIGSTOP, do NOT kill: killing the child runs futex_exit_release() on the
+# still-dangling pi_blocked_on -> soft-lock -> wdog/PS_HOLD reboot (slide.c
+# documents this).  Frozen processes are harmless; clean up after reading data.
+pkill -STOP -f ghostlock_exe 2>/dev/null
 kill $SYNC_PID 2>/dev/null
 kill $DMESG_PID 2>/dev/null
 su -c 'pkill -f sync_loop.sh 2>/dev/null'

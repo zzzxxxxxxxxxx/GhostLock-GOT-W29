@@ -82,3 +82,38 @@ slide-kaslr-ok base=ffffffa7c1280000 slide=00000027b9200000
 
 - 真实攻击（shell 无 KPM 无 RT）的 overlay 保护（返回路径帧覆盖）
 - 写原语 → 完整提权链（cred 改写等）
+
+## 2026-08-19 后续：owner-ful 尝试与 4.19 确定性覆盖
+
+### 新发现
+
+1. **ownerless 路径在 4.19 被挡死**：`rt_mutex_adjust_pi()` 有
+   `if (!owner) return 0;`——fake_lock 无 owner（empty_zero_page/零页）时
+   根本不调 `rt_mutex_adjust_prio_chain()`。popsicle（6.12）没有该检查，
+   因此它的 ownerless slide 验证在 4.19 无法复现。
+2. **owner-ful payload 已移植**（util.c SLIDE 模式）：fake_lock 的 owner=
+   fake_task|1、fake_task->pi_blocked_on=fake_w0、fake_w0->lock=lockB
+   （第二个 payload 零锁，绕开 walk [6] `lock==orig_lock` 死结）。
+3. **4.19 返回路径确定性覆盖 res_in[4]**（lock word，bits+152）：实测每次
+   fake walk 的 lock 都是内核地址残留（如 `stext+0xe0a0` = rt_sigreturn 内部、
+   payload 页基址），**从未等于 payload fake_lock**。FP+sched_yield 只把
+   do_notify_resume 触发率降到 ~21%，但 lock 覆盖几乎必然（res_in[3] task
+   偶尔完好=init_task，res_in[4] 必坏）。这是 GOT-W29 真实攻击的机制死结。
+4. **empty_zero_page 不可作为强制写目标**：REPAIR3/REPAIR5 用它当 fake_lock
+   写 wait_lock 会破坏全系统共享零页 → 测试后 oops 风暴。
+5. **收网 killall 触发 soft-lock 重启**：SIGKILL child 跑 futex_exit_release
+   走悬空 pi_blocked_on → soft-lock → wdog/PS_HOLD（slide.c 注释早有警告）。
+   收网改用 SIGSTOP 后设备不再每次重启。
+
+### 当前 KPM 兜底（统一 skip）
+
+`rt_mutex_adjust_prio_chain` before 对 fake walk（orig_waiter==NULL）无条件
+`skip_origin=1` + 清 `task->pi_blocked_on`：不写不崩，系统稳定，可重复测试。
+代价是无法验证 owner-ful 写（被跳过）。
+
+### 下一方向：ppoll 载体
+
+pselect 的 res_in[4] 被确定性覆盖；ppoll 的 pollfd 数组在栈的深度可能不同，
+若避开返回路径帧则 words 可用 pollfd.events（用户可控）承载。`do_poll`
+符号在 GOT-W29 kallsyms 缺失（验证工具受限），需直接实现 ppoll overlay
+并实测 pollfd 数组 vs rt_waiter 的栈几何是否重叠。
