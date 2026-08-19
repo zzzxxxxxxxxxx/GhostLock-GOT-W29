@@ -17,6 +17,11 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <sys/ptrace.h>
+#include <sys/user.h>
+#include <linux/elf.h>
 
 struct sched_attr_local {
 	uint32_t size;
@@ -129,6 +134,57 @@ int main(void)
 		 * care that the kernel copies the attr onto its stack. */
 		*(uint32_t *)(bpf_attr + 0) = 0; /* map_type */
 		(void)syscall(SYS_bpf, 0, bpf_attr, sizeof(bpf_attr));
+	}
+
+	/* bind + connect: sockaddr_storage copied to kernel stack */
+	{
+		int s = socket(AF_INET, SOCK_STREAM, 0);
+		if (s >= 0) {
+			struct sockaddr_in sa;
+			memset(&sa, 0, sizeof(sa));
+			sa.sin_family = AF_INET;
+			sa.sin_port = 0;
+			sa.sin_addr.s_addr = 0x0100007f; /* 127.0.0.1 */
+			(void)bind(s, (struct sockaddr *)&sa, sizeof(sa));
+			(void)connect(s, (struct sockaddr *)&sa, sizeof(sa));
+			close(s);
+		}
+	}
+
+	/* rt_sigaction: struct sigaction copied to kernel stack */
+	{
+		struct sigaction sa;
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_handler = SIG_IGN;
+		sigemptyset(&sa.sa_mask);
+		(void)syscall(SYS_rt_sigaction, SIGUSR1, &sa, NULL, sizeof(sigset_t));
+	}
+
+	/* ptrace PTRACE_SETREGSET (NT_PRSTATUS): 272-byte user_pt_regs copied
+	 * to the kernel stack via gpr_set.
+	 * Need a traced child: child PTRACE_TRACEME + SIGSTOP, parent SETREGS. */
+	{
+		pid_t child = fork();
+		if (child == 0) {
+			(void)ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+			raise(SIGSTOP);
+			_exit(0);
+		}
+		if (child > 0) {
+			waitpid(child, NULL, 0);
+			/* NT_PRSTATUS: 272-byte user_pt_regs into gpr_set
+			 * NT_PRFPREG: 528-byte user_fpsimd_state into __fpr_set */
+			char regs[528];
+			memset(regs, 0, sizeof(regs));
+			*(unsigned long long *)regs = 0x5454545454545454ULL;
+			struct iovec iov = {
+				.iov_base = &regs,
+				.iov_len = sizeof(regs),
+			};
+			(void)ptrace(PTRACE_SETREGSET, child, NT_PRFPREG, &iov);
+			(void)kill(child, SIGKILL);
+			waitpid(child, NULL, 0);
+		}
 	}
 
 	printf("PROBE_DONE\n");
