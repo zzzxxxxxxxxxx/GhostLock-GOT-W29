@@ -10,7 +10,7 @@ HarmonyOS 4.x, kernel `4.19.157-perf+`）上 **CVE-2026-43499**
 |---|---|
 | 型号 | HUAWEI MatePad Pro 11 GOT-W29 (tablet) |
 | SoC | Qualcomm kona (SM8250, Snapdragon 870) |
-| 系统 | HarmonyOS 4.2 (104.2.0.237C00), 出厂 4.0 (104.0.0.136) |
+| 系统 | HarmonyOS 4.0 (104.0.0.136) |
 | 内核 | `4.19.157-perf+` |
 | VA | 39-bit, 4K pages, KASLR on |
 
