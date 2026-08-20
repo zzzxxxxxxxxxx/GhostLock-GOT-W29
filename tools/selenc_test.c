@@ -45,8 +45,10 @@ int main(void)
 	FD_ZERO(&ex);
 	for (int fd = 128; fd < 192; fd++)
 		FD_SET(fd, &out);       /* res_out words 2-3-4 */
-	for (int fd = 192; fd < 320; fd++)
+	for (int fd = 192; fd < 320; fd++) {
 		FD_SET(fd, &ex);        /* res_ex words 3-4 */
+		FD_SET(fd, &out);       /* OVERLAP: same fds also in out */
+	}
 
 	int p[2];
 	if (pipe(p) != 0) {
@@ -85,9 +87,9 @@ int main(void)
 	(void)send(c, "x", 1, MSG_OOB);
 	printf("oob sent\n");
 
-	for (int fd = 128; fd < 192; fd++)
-		dup2(p[1], fd);
-	for (int fd = 192; fd < 320; fd++)
+	/* all out+ex fds get the OOB socket: it must be POLLOUT and POLLPRI
+	 * at the same time for the overlapping fds */
+	for (int fd = 128; fd < 320; fd++)
 		dup2(peer, fd);
 
 	struct timeval tv = { 1, 0 };
