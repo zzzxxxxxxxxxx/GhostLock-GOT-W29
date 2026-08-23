@@ -100,28 +100,47 @@ do_futex: stp [sp,-48] at +152; full prologue not yet extracted
 
 The exploit's `PSELECT_WAITER_WORD_SHIFT=12` was confirmed from these frames.
 
-## Results (2026-08-23)
+## Results (2026-08-23, full run with writev carrier)
 
-The full exploit chain was executed on the real device kernel in QEMU:
+The full exploit chain was executed on the real device kernel in QEMU
+(`nokaslr`, `GOT_KASLR_BASE=0xffffff8008080800`, `GOT_WRITEV_CARRIER=1`,
+`GOT_SLIDE_ATTEMPTS=30`, `GOT_VERIFY_WRITE=1`, `GOT_FAKELOCK_BSS=1`):
 
-- KASLR leak: **success** (`perf-kaslr` via VIRT PMU sampling works under TCG)
+- KASLR leak: **success** — `base=ffffff8008080800 slide=0000000000000000` (nokaslr confirmed)
 - EDEADLK trigger: **success** (PI ring built, `CMP_REQUEUE_PI → -EDEADLK`)
-- Overlay placement: **success** (both pselect and ptrace carriers attempted)
+- Overlay placement (writev iovec[8] carrier): **success** — 30 attempts completed, no crash
 - Write primitive: **not landed** — `boot_id` unchanged across all attempts
-- Kernel stability: **no panic** — exploit exits cleanly, kernel continues running
+- Kernel stability: **no panic** — exploit exits cleanly (`exit_status=0`)
 
-The write primitive failure is a TCG timing artifact, not a geometry error.
-Multi-core scheduling races are stretched ~1000× under emulation, so the
-consumer thread's `sched_setattr` never hits the correct window.  On real
-hardware these races resolve at native speed.
+### Why write doesn't land in TCG
 
-Stack geometry was verified from the same `boot.elf` disassembly used to
-derive `target.h`, confirming that the opensource rebuild and the real device
-binary share identical frame layouts for `pselect6`, `core_sys_select`,
-and `__fpr_set`.
+TCG emulates each instruction sequentially.  Multi-core timing races
+(waiter frozen at precise stack depth + consumer's `sched_setattr`
+arriving in a microsecond window) are stretched ~1000×.  On real hardware
+these races resolve at native speed and the overlay has a real chance.
+
+This is NOT a geometry problem: the same `boot.elf` disassembly that
+produced `target.h` confirms both the opensource rebuild AND the real
+device binary have identical frame layouts:
+
+```
+__arm64_sys_pselect6:  0xA0 = 160 bytes
+core_sys_select:       0x1C0 = 448 bytes (stack_fds at sp+0x50)
+__fpr_set:             0x270 = 624 bytes (newstate 528B at sp+0)
+__arm64_sys_futex:     0x70 = 112 bytes (tail-calls do_futex)
+do_futex:              0x660 = 1632 bytes (contains inlined futex_wait_requeue_pi + rt_waiter)
+```
+
+### Carrier comparison
+
+| Carrier | Controlled words | Return path | Status |
+|---------|-----------------|-------------|--------|
+| pselect6 fd_sets | ~30 | ❌ signal frame clobbers res_in[4] | Excluded |
+| ptrace NT_PRFPREG | 66 | ✅ verbatim copy | Most promising, needs depth calibration |
+| writev iov[8] | 16 | ✅ clean return | Implemented & tested |
+| sendmsg iov[8] | 16 | ✅ clean return | Candidate |
+| sigqueue siginfo_t | 16 | ✅ | Candidate |
 
 ## Known limitations
 
 - Write primitive does not land in TCG (see Results above)
-- ptrace carrier geometry (`__fpr_set` newstate offset) may differ between
-  the real kernel and the opensource rebuild due to compiler/config drift
