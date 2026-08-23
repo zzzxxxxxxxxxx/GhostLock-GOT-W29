@@ -141,6 +141,42 @@ do_futex:              0x660 = 1632 bytes (contains inlined futex_wait_requeue_p
 | sendmsg iov[8] | 16 | ✅ clean return | Candidate |
 | sigqueue siginfo_t | 16 | ✅ | Candidate |
 
+## Stack depth calibration (real kernel, measured in QEMU)
+
+### Method
+
+Boot the real device kernel with `nokaslr` and a test initramfs that
+triggers both `futex(WAIT_REQUEUE_PI)` and `ptrace(NT_PRFPREG)` on the same
+thread.  After completion, search the shared-memory RAM dump for the known
+magic value (`0xDEADBEEF12345678`) written as the first word of the fpregs
+buffer — this locates `__fpr_set`'s `newstate` buffer on the kernel stack.
+
+### Results
+
+`newstate` found at guest physical address `PA=0x7B649E20`, corresponding to
+kernel linear-map VA `0xffffffC03B649E20`.  Confirmed as kernel stack by
+nearby `PER_CPU_OFFSET` (`0xffffff800b40e368`) and kernel text pointers.
+
+Real-kernel frame sizes (from disassembly of `kernel_image.bin`):
+
+```
+__arm64_sys_futex:    sub sp,#0x70                    = 112 bytes
+do_futex:             stp [sp,-96] + sub sp,#0x600    = 1632 bytes (contains inlined futex_wait_requeue_pi)
+__arm64_sys_pselect6: sub sp,#0xA0                    = 160 bytes
+core_sys_select:      sub sp,#0x1C0                   = 448 bytes (stack_fds at sp+0x50)
+__fpr_set:            stp [sp,-80] + sub sp,#0x220    = 624 bytes (newstate 528B at local sp+0)
+```
+
+The rt_waiter position within do_futex's 0x600-byte local area has not been
+precisely located yet.  To calibrate the ptrace carrier's word offset:
+
+1. Run full EDEADLK + ptrace carrier on **real device** (timing correct)
+2. Use KPM hook to print SP at `futex_requeue` entry and at `__fpr_set` entry
+3. Delta gives the exact word offset for the fake waiter within fpregs[66]
+
+Alternatively, sweep `GOT_TREE_PC` / `GOT_TREE_LEFT` env vars across
+plausible offsets on real hardware until boot_id changes.
+
 ## Known limitations
 
 - Write primitive does not land in TCG (see Results above)
