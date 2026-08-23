@@ -177,6 +177,17 @@ precisely located yet.  To calibrate the ptrace carrier's word offset:
 Alternatively, sweep `GOT_TREE_PC` / `GOT_TREE_LEFT` env vars across
 plausible offsets on real hardware until boot_id changes.
 
+## Overlay verification result
+
+After full exploit run with ptrace carrier + GOT_FAKELOCK_BSS, searched all
+guest RAM for the fake_lock value (`0xffffff800b750000`).  Found 27 occurrences,
+ALL in userspace memory (.data section, ramfs page cache).  **None found on
+any kernel stack page.**
+
+Root cause: TCG timer interrupt rate differs from real HW.  After carrier
+returns and waiter freezes, kernel entries (timer IRQ, scheduler tick) push
+new frames onto the same stack, overwriting the overlay at rt_waiter depth.
+
 ## Known limitations
 
 - Write primitive does not land in TCG (see Results above)
