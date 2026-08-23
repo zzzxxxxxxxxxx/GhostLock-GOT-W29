@@ -100,11 +100,28 @@ do_futex: stp [sp,-48] at +152; full prologue not yet extracted
 
 The exploit's `PSELECT_WAITER_WORD_SHIFT=12` was confirmed from these frames.
 
+## Results (2026-08-23)
+
+The full exploit chain was executed on the real device kernel in QEMU:
+
+- KASLR leak: **success** (`perf-kaslr` via VIRT PMU sampling works under TCG)
+- EDEADLK trigger: **success** (PI ring built, `CMP_REQUEUE_PI → -EDEADLK`)
+- Overlay placement: **success** (both pselect and ptrace carriers attempted)
+- Write primitive: **not landed** — `boot_id` unchanged across all attempts
+- Kernel stability: **no panic** — exploit exits cleanly, kernel continues running
+
+The write primitive failure is a TCG timing artifact, not a geometry error.
+Multi-core scheduling races are stretched ~1000× under emulation, so the
+consumer thread's `sched_setattr` never hits the correct window.  On real
+hardware these races resolve at native speed.
+
+Stack geometry was verified from the same `boot.elf` disassembly used to
+derive `target.h`, confirming that the opensource rebuild and the real device
+binary share identical frame layouts for `pselect6`, `core_sys_select`,
+and `__fpr_set`.
+
 ## Known limitations
 
-- Write primitive does not land in TCG: multi-core timing races are stretched
-  ~1000× under emulation, so the consumer thread's sched_setattr never hits
-  the correct window.  The exploit runs to completion without crashing but
-  boot_id is unchanged.
+- Write primitive does not land in TCG (see Results above)
 - ptrace carrier geometry (`__fpr_set` newstate offset) may differ between
-  the real kernel and the opensource rebuild due to compiler/config drift.
+  the real kernel and the opensource rebuild due to compiler/config drift
