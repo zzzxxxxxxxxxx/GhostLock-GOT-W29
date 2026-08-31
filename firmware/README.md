@@ -6,20 +6,18 @@
 ## 目录结构
 
 - `boot.img` — 原始 boot 镜像
+- `symtab.txt` — 从内核提取的符号表（kallsyms，逆向/符号匹配用）
 - `unpacked_boot/`
-  - `kernel` / `kernel.raw` — 内核（gzip 压缩 / 解压后的 ARM64 Image）
+  - `kernel.raw` — 解压后的 ARM64 Image（原始内核）
   - `kernel.elf` — vmlinux-to-elf 生成的带符号 ELF（逆向/断点用）
-  - `kernel.patched` — 经 SCM + PAN patch 的可用内核
+  - `kernel.patched` — 经 SCM + PAN patch 的可用内核（QEMU 启动用）
   - `kernel.config` — 从内核提取的 .config
-  - `ramdisk` / `ramdisk.cpio` / `ramdisk_root/` — ramdisk（gzip / cpio / 展开后）
-  - `dtb` / `dtb.dts` / `dtbs/` — 设备树（拼接的多 DTB，含 kona v1/v2/v2.1 变体）
 
 ## 解包
 
 ```bash
 unpack_bootimg --boot_img boot.img --out unpacked_boot
-gzip -dc unpacked_boot/kernel > kernel.raw      # ARM64 boot Image
-dtc -I dtb -O dts -o dtb.dts unpacked_boot/dtb  # 反编译设备树
+gzip -dc unpacked_boot/kernel > kernel.raw      # 解压得到 ARM64 boot Image
 ```
 
 ## QEMU 适配（必需的内核 patch）
