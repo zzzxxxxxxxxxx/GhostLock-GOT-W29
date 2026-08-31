@@ -43,11 +43,13 @@ qemu-system-aarch64 \
   -kernel unpacked_boot/kernel.patched \
   -initrd /tmp/initramfs.cpio.gz \
   -append "nokaslr rdinit=/init console=ttyAMA0 panic=0 loglevel=6 \
-           initcall_blacklist=scm_mem_protection_init,proc_app_info_init,storage_rochk_misc_init,socinfo_init" \
+           initcall_blacklist=proc_app_info_init" \
   -S -qmp unix:/tmp/qmp.sock,server,nowait -display none -no-shutdown
 ```
 
-黑名单为 QEMU 上必崩的高通初始化。`futex_init` 已移出黑名单（PAN 修好后可用，便于 futex-PI 调试）。
+黑名单只需 `proc_app_info_init`（读 SMEM 导致数据中止，QEMU 上必崩）。
+`scm_mem_protection_init`、`storage_rochk_misc_init`、`socinfo_init`、`futex_init`
+都可正常运行（SCM/PAN 修复后不再崩溃），因此无需屏蔽，以尽量贴近真机行为。
 
 ## 调试要点
 
