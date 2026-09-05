@@ -9,11 +9,14 @@
    回滚路径激活 `remove_waiter()` 的 `current != waiter->task` 清理 bug（本内核
    `kernel/locking/rtmutex.c:1110-1112`，上游修复 `3bfdc63936dd`），waiter 的
    `pi_blocked_on` 悬空（指向其内核栈 `E-0x1b0` 处的 rt_waiter）。
-2. **写原语机制成立且 GDB 实锤过**：`rt_mutex_adjust_prio_chain` step[7] 对
-   fake waiter 的 `rb_erase`（单左子路径）执行 `[tree_left] = tree_pc`，
-   把 `boot_id` 改写为 0xffffff800b412320（`empty_zero_page` ownerless 假锁即可，
-   无需 owner/ groom/ kernelsnitch）。
-3. **但 shell→写原语的投递层（载体）在设备内核上无解**：fake waiter 必须放在
+2. **写原语从未在无作弊条件下验证成功**：`rt_mutex_adjust_prio_chain` step[7]
+   的 `rb_erase`（单左子路径 `[tree_left] = tree_pc`）写入 boot_id（值为
+   0xffffff800b412320、`empty_zero_page` ownerless 假锁即可，无需 owner/
+   groom/ kernelsnitch）**仅在前述写原语机制的正确性层面成立，且两次验证都是
+   注入方式**：QEMU 真机内核上 GDB 直接把 fake waiter 写入悬空 blk；实机上次
+   成功则靠自写 KPM 重建 overlay 并改写 `next_lock` 参数。**两者都不是纯用户态
+   触发，因此不能算“写原语在实机验证成功”。**
+3. **根本限制（投递层死结）**：shell→写原语卡在 fake waiter 的投递——必须放在
    `E-0x1b0`（11 个 64 位词），而该深度不存在任何用户可控缓冲区——四大投递
    机制（块拷贝 / import_iovec / 单值 get_user / 用户结构体镜像）已全量穷举。
    **这是该内核 futex 帧几何决定的死结，不是实现缺陷。**（同 CVE 在 k40
@@ -72,7 +75,12 @@ KASLR slide=0x147f200000    runtime _stext=0xffffff9487280800
 
 工具：`tools/edeadlk_probe.c`。
 
-### 写原语（GDB 注入验证，机制实锤）
+### 写原语机制（仅注入下验证，非干净利用）
+
+[注] 此为 `rb_erase` 写原语的**机制验证**，两次验证都依赖注入：
+一次在 QEMU 真机内核 `kernel.patched` 上用 **GDB** 把 fake waiter 直接写入
+悬空 blk；另一次在实机用自写 **KPM**（下文工具链）重建 overlay。两者都不是
+纯用户态触发，不代表“实机验证成功”，仅证明 walk 的写路径与编码正确。
 
 `rt_mutex_adjust_prio_chain` 的 walk 读悬空 `pi_blocked_on` 处的 fake rt_waiter：
 - [3] `next_lock == waiter->lock`（`lock = empty_zero_page`，{wait_lock=0,
@@ -92,7 +100,7 @@ empty_zero_page owner=0x0  waiters.root=blk              (ownerless!)
 
 **不需要 owner-ful 页 / `prepare_skb_payload` / `kernelsnitch`**——`empty_zero_page`
 （固定 .bss 地址 0xffffff800b750000）即可作 `lock`。整条链仅剩“用户态把 fake
-waiter 放到悬空 blk”一步（见下）。
+waiter 放到悬空 blk”一步，而这一步已被载体穷举判定为不可行（见下节）。
 
 ### 关键偏移（boot.elf 反汇编实测，`exploit/ghostlock-source/src/target.h`）
 
