@@ -14,6 +14,7 @@
 #define FUTEX_LOCK_PI 6
 #define FUTEX_WAIT_REQUEUE_PI 11
 #define FUTEX_CMP_REQUEUE_PI 12
+#define FUTEX_WAKE 1
 #define FUTEX_PRIVATE_FLAG 128
 #define SYS_futex 98
 #define FUTEX_BITSET_MATCH_ANY 0xffffffff

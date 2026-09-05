@@ -1,15 +1,25 @@
 # CVE-2026-43499 (GhostLock) — HUAWEI MatePad Pro 11 GOT-W29
 
 针对 GOT-W29（HarmonyOS 4.0, kernel `4.19.157-perf+`）上
-**CVE-2026-43499**（rtmutex/futex-PI UAF，"GhostLock"）的提权研究。
+**CVE-2026-43499**（rtmutex/futex-PI 栈 UAF，"GhostLock"）的提权研究。
 
-**核心结论**：
+## 最终结论
 
-- 漏洞的**写原语在实机上验证成功**（KPM 辅助下改写内核 `sysctl_bootid`、
-  推导 KASLR slide）。
-- **但真实提权（shell 无 KPM 无 RT）不可行**：4.19 内核的 pselect 返回路径
-  会确定性覆盖 overlay 的 lock 字，且无替代载体。这是内核栈几何决定的
-  死结，不是实现缺陷（对比设备 smt878u/popsicle 可完整提权，因栈几何不同）。
+1. **漏洞真实且可触发**：值持有 PI 环使 `FUTEX_CMP_REQUEUE_PI` 返回 `-EDEADLK`，
+   回滚路径激活 `remove_waiter()` 的 `current != waiter->task` 清理 bug（本内核
+   `kernel/locking/rtmutex.c:1110-1112`，上游修复 `3bfdc63936dd`），waiter 的
+   `pi_blocked_on` 悬空（指向其内核栈 `E-0x1b0` 处的 rt_waiter）。
+2. **写原语机制成立且 GDB 实锤过**：`rt_mutex_adjust_prio_chain` step[7] 对
+   fake waiter 的 `rb_erase`（单左子路径）执行 `[tree_left] = tree_pc`，
+   把 `boot_id` 改写为 0xffffff800b412320（`empty_zero_page` ownerless 假锁即可，
+   无需 owner/ groom/ kernelsnitch）。
+3. **但 shell→写原语的投递层（载体）在设备内核上无解**：fake waiter 必须放在
+   `E-0x1b0`（11 个 64 位词），而该深度不存在任何用户可控缓冲区——四大投递
+   机制（块拷贝 / import_iovec / 单值 get_user / 用户结构体镜像）已全量穷举。
+   **这是该内核 futex 帧几何决定的死结，不是实现缺陷。**（同 CVE 在 k40
+   (shift=1)、Pixel 7/smt878u（rt_waiter=0x470）等几何不同的设备上可完整提权。）
+
+---
 
 ## 设备
 
@@ -18,215 +28,130 @@
 | 型号 | HUAWEI MatePad Pro 11 GOT-W29 |
 | SoC | Qualcomm kona (SM8250, Snapdragon 870) |
 | 系统 | HarmonyOS 4.0 (104.0.0.136) |
-| 内核 | `4.19.157-perf+` |
+| 内核 | `4.19.157-perf+`（boot.elf 反汇编 + `firmware/symtab.txt`） |
 | VA | 39-bit, 4K pages, KASLR on |
 
-## 漏洞
+## 漏洞与触发（最终版）
 
-`kernel/locking/rtmutex.c` 的 `remove_waiter()` 在
-`rt_mutex_start_proxy_lock()` 回滚路径用 `current` 而非 `waiter->task` 清理，
-导致悬空 `pi_blocked_on`（栈 UAF）。影响 `2.6.39 ~ 7.1`（本内核在范围内）。
-上游修复 commit `3bfdc63936dd`。
+机制：制造 PI 环（waiter→target→owner→chain→waiter）让
+`FUTEX_CMP_REQUEUE_PI` 走 EDEADLK 回滚，回滚中 `remove_waiter(lock, waiter)`
+用 `current`（requeue 线程）而非 `waiter->task` 清理：
+`rt_mutex_dequeue` 移除真实 waiter 节点，但 **waiter 的 `pi_blocked_on` 未被清**
+（`current->pi_blocked_on = NULL`），成为指向内核栈 rt_waiter 的悬空指针。
 
-本设备确认：源码 `rtmutex.c:1110-1112`、boot.elf 反编译、真机触发全部验证。
+值持有环（probe 环，实测稳定 `-EDEADLK`）：
 
-## 触发
+- waiter：`FUTEX_LOCK_PI(chain)` 持 chain；`FUTEX_WAIT_REQUEUE_PI(wait, 0, target)`
+- owner：`FUTEX_LOCK_PI(target)` 持 target；`FUTEX_LOCK_PI(chain)` 阻塞
+- main：`FUTEX_CMP_REQUEUE_PI(wait, 1, target)` → `-EDEADLK`
+- waiter 超时返回（`WAIT_REQUEUE_PI` 2s）后悬空 `pi_blocked_on` 保留在栈上
 
-### 漏洞触发机制
-
-制造 PI 环让 `FUTEX_CMP_REQUEUE_PI` 返回 `-EDEADLK`，回滚触发 remove_waiter
-bug，留下悬空的 `pi_blocked_on`（指向 waiter 线程内核栈上的 rt_waiter）。
-
-### 旧触发为何失败
-
-旧触发让 waiter 自持 requeue 目标 futex（self-own），恰好命中本内核
-`task_blocks_on_rt_mutex` 的提前 `owner==task` 检查（boot.elf 0x3808-0x3868），
-在写入 `pi_blocked_on` **之前**返回 → **从不产生悬空指针** → overlay 放置
-是误诊（无崩溃 + boot_id 不变）。
-
-### 正确触发（PI 环，已实施）
-
-PI 环：owner `FUTEX_LOCK_PI(target)` 持有 requeue 目标；waiter 持 chain futex；
-owner 再阻塞在 chain（环：waiter→target→owner→chain→waiter）。requeue 时
-链走检测 `rt_mutex_owner(chain)==top_task` → `-EDEADLK` → 回滚清错人的
-`pi_blocked_on` → **waiter 的 pi_blocked_on 悬空**。owner 需降优先级
-（nice=10）使 boost 后 prio 与 owner_waiter->prio 不同，否则
-`rt_mutex_waiter_equal` 早退。
+注意：旧“self-own”触发、`edeadlk_probe` variant 11 的 `-EDEADLK` 都是
+`owner==task` **早退**（`rtmutex.c:1035`），不产生悬空指针，无效。
 
 ## 成果
 
-### KASLR 泄露（perf_event_open）
+### KASLR 泄露（perf_event_open，shell 身份可行）
 
-shell (uid 2000) 下 `perf_event_paranoid=-1`，`perf_event_open(PERF_SAMPLE_IP,
-exclude_user=1)` 采样内核文本地址簇，对齐已知符号偏移得 slide。
+`perf_event_paranoid=-1` 下 `perf_event_open(PERF_SAMPLE_IP, exclude_user=1)`
+采样内核文本簇，对齐已知符号偏移得 slide：
 
 ```text
 samples=27651 kernel_ips=1685 lo=0xffffff948728176c hi=0xffffff9488ebfc7c
-KASLR slide=0x147f200000    (40/40 IP 映射进内核文本区验证)
-runtime _stext=0xffffff9487280800
+KASLR slide=0x147f200000    runtime _stext=0xffffff9487280800
 ```
 
-工具: `tools/perf_kaslr.c`。运行前提：shell（Shizuku `rish`），无 seccomp 拦截。
+工具：`tools/perf_kaslr.c`。
 
-### EDEADLK 触发
+### EDEADLK 触发（悬空指针建立）
 
 ```text
 [M] CMP_REQUEUE_PI ret=-1 errno=35 (EDEADLK!)
-[W] WAIT_REQUEUE_PI ret=-1 errno=110 (ETIMEDOUT)  ← waiter 返回
-[M] waiter_returned=1                              ← 留下悬空 pi_blocked_on
+[W] WAIT_REQUEUE_PI ret=-1 errno=110 (ETIMEDOUT)  ← waiter 返回，pi_blocked_on 悬空
 ```
 
-工具: `tools/edeadlk_probe.c`（variant 8+2+1 = 11，或 27）。
+工具：`tools/edeadlk_probe.c`。
 
-### 写原语机制
+### 写原语（GDB 注入验证，机制实锤）
 
-`rt_mutex_adjust_prio_chain` step[7] 对 fake waiter 做 rb_erase（单左子路径）：
-`*(tree_left) = tree_pc` + `__rb_change_child` 增量写。target.h 中全部偏移为
-boot.elf 反汇编实测。
+`rt_mutex_adjust_prio_chain` 的 walk 读悬空 `pi_blocked_on` 处的 fake rt_waiter：
+- [3] `next_lock == waiter->lock`（`lock = empty_zero_page`，{wait_lock=0,
+  waiters 由 GDB 设为 blk}）
+- [5] `raw_spin_trylock(&lock->wait_lock)` 零锁成功
+- [7] `rt_mutex_dequeue` → `rb_erase` 单左子路径：`[tree_left] = tree_pc`
+  → 把 `w0=0xffffff800b412320`（写值）写入 `w2=0xffffff800b7f8b64`（boot_id）
+- [9] ownerless 干净返回（`rt_mutex_adjust_pi` 无 `if(!owner)` 拦截——该检查只在
+  `requeue=false` 分支，fake waiter prio=130 ≠ task->prio 使 `requeue` 保持 true）
 
-### 完整偏移
+实测（GDB 直接向悬空 blk 写 ownerless fake）回读：
 
-见 `exploit/ghostlock-source/src/target.h`。要点：
+```text
+boot_id[0..7] @0xffffff800b7f8b64 = 0xffffff800b412320   (== SLIDE_LOGGERS_0_1，写入成功!)
+empty_zero_page owner=0x0  waiters.root=blk              (ownerless!)
+```
 
-- task_struct: cred=0x988, prio=0x184, pi_blocked_on=0xa90, usage=0x68, mm=0x728
-- rt_mutex_waiter (HW_FUTEX_PI): tree@0x0, pi_tree@0x18, task@0x30, lock@0x38,
-  major@0x40, prio@0x48, deadline@0x50
+**不需要 owner-ful 页 / `prepare_skb_payload` / `kernelsnitch`**——`empty_zero_page`
+（固定 .bss 地址 0xffffff800b750000）即可作 `lock`。整条链仅剩“用户态把 fake
+waiter 放到悬空 blk”一步（见下）。
+
+### 关键偏移（boot.elf 反汇编实测，`exploit/ghostlock-source/src/target.h`）
+
+- task_struct：cred=0x988, prio=0x184, pi_blocked_on=0xa90, usage=0x68, mm=0x728
+- rt_mutex_waiter (CONFIG_HW_FUTEX_PI)：tree@0x0, pi_tree@0x18, task@0x30,
+  lock@0x38, major_prio@0x40(=w8)，major_only@0x44, prio@0x48(=w9), deadline@0x50
+- rt_mutex：wait_lock@0x0, waiters.root@0x8, leftmost@0x10, owner@0x18
 - PAGE_OFFSET=0xffffffc000000000, PHYS_OFFSET=0x80000000 (kona),
   KIMAGE_TEXT_BASE=0xffffff8008080000
 
-### 写原语实机验证
+## 为什么写原语无法从 shell 落地（载体死结）
 
-自写 KPM（`tools/kpm-debug/rtmutex-dbg.c`，KernelPatch 0.13.5 inline-hook）
-在 fake walk 时重建 overlay（tree/task/lock）并改写 `next_lock` 参数为
-`empty_zero_page`（KernelPatch `_transit8` 用修改后的 fargs 调原函数），使
-`rt_mutex_adjust_prio_chain` [3] `next_lock==waiter->lock` 通过、[5] trylock
-零锁成功、[6] ownerless、[7] `rt_mutex_dequeue`（rb_erase 单左子）执行——
-**`sysctl_bootid` 被改写为 `&loggers[0][1]`，`slide-kaslr-ok`**。
+悬空 blk = waiter 的 `__arm64_sys_futex` 入口 SP(E) − `0x1b0`（GDB 实测
+`E=…be70, blk=…bcc0`），即 `core_sys_select` 的 `stack_fds[12]`。载体必须把
+11 个任意 64 位词放到 `[E-0x1b0, E-0x158)`。四类机制全量穷举（`kernel.elf`
+反汇编 + `tools/scan_carriers2.py` + `tools/scan_carriers3.py`）结果：
 
-```text
-REPAIR3 waiter=0xffffff801ecdbc00 lock=0xffffffa7c4950000
-slide boot_id_leaked_nfulnl_logger value=ffffffa7c4612320
-slide-kaslr-ok base=ffffffa7c1280000 slide=00000027b9200000
-```
+| 机制 | 最深可达 | 排除原因 |
+|---|---|---|
+| `copy_from_user` 块拷贝 | 见右 | 唯一覆盖 `E-0x1b0` 的 `core_sys_select`：nfds=320（栈路径上限，`FDS_BYTES(320)=40B`，**nfds≥321 → 48B 必走 kvmalloc**）下 fake waiter w0..w6 落 `out[3..4]/ex[0..4]` 输入位图，但 **w7 lock 恰好落 `res_in[0]`**——`zero_fd_set` 清零；阻塞需无就绪 fd→lock=0→[5] `raw_spin_trylock(&0)` 崩；编码则 select 立即返回→`do_notify_resume` 0x1b0 帧覆盖。**差一格，无解** |
+| ptrace `NT_PRFPREG`（`__fpr_set` newstate 528B） | `[E-0x4e0, E-0x2d0)` | 链 `sys_ptrace 0x30 + arch_ptrace 0x10 + ptrace_request 0xf0 + ptrace_regset 0x30 + fpr_set 0x20 + __fpr_set 0x270 = 0x4e0`，比目标**深 0x120**，覆盖不到 |
+| `import_iovec` 族（readv/writev/vmsplice/process_vm_*/keyctl） | `E-0x160` | 浅 0x50 |
+| ppoll `stack_pps` | `E-0x3f0`（do_sys_poll 帧 0x400, nfds≤30） | 深 0x240 且超数组容限 |
+| 单值 `get_user` 写深栈（新扫） | — | `scan_carriers3.py` 对全部 syscall 可达函数过滤“参数指针源 load → 写 [sp+0x100..0x280]”：仅 84 个命中，全是 printf 家族 varargs 转存，无用户数据 |
+| 其他 | — | `kernel_quotactl`（getname 路径串约束）、`___sys_sendmsg`（msghdr 48B@E-0x210）、`btf_get_info_by_fd`/`do_seccomp`/`get_compat_msghdr`/`restore_altstack`（尺寸/特权不够）、setxattr（value 为 kvmalloc） |
 
-## Overlay 设计
+补充事实：
 
-栈几何由 boot.elf 帧尺寸实锤：`__arm64_sys_futex(0x70) + do_futex(0x60+0x1a0)`
-里 rt_waiter 在 `sp+0xc0` → 深度 `0x1b0`；pselect 路径 `stack_fds[0]` 深度
-`0x210`，差 `0x60` = 12 words。因此 `word_i` 落在 `stack_fds[12+i]`：
-words 0-2 在 ex[2..4] 输入区（直接可控），words 6-7（task/lock）在
-res_in[3..4]（用 in[3..4] + POLLIN-ready fd 编码），words 3-5/8-10 留 0。
-pselect 因 ready fd 立即返回 → waiter 用户态忙等（禁信号、零 syscall）直到
-consumer 触发完成。
-
-## 为什么真实提权不可行
-
-### 1. pselect 载体的 lock 字被返回路径覆盖
-
-overlay 的 task/lock words 落在 `res_in[3]/[4]`（由 fd ready 编码）。实测
-`res_in[4]`（lock）在 pselect 返回路径被确定性覆盖（rt_sigreturn 帧残留），
-从未等于 payload 的 fake_lock；`res_in[3]`（task）偶尔完好。用户态规避
-（FP 操作 + sched_yield）只能把 do_notify_resume 触发率降到 ~21%，但 lock
-覆盖几乎必然。
-
-另外两条相关事实：
-
-- **ownerless 路径被 4.19 挡死**：`rt_mutex_adjust_pi()` 有 `if (!owner)
-  return 0;`，fake_lock 无 owner 时不调 adjust_prio_chain。popsicle（6.12）
-  无此检查。owner-ful payload 已移植（fake_lock owner=fake_task|1），但因
-  lock 字必被覆盖而无法可靠触发。
-- **empty_zero_page 不能当强制写目标**：写它会破坏全系统共享零页 → 测试后
-  oops 风暴。
-
-### 2. 替代载体（ppoll）编码层面不行
-
-boot.elf 反汇编 `__arm64_sys_ppoll` / `do_sys_poll` 后确认：pollfd 是
-16 字节结构（fd 4B + events 4B + revents 4B + pad 4B），无法承载 fake
-waiter 的 64 位 task/lock words——fd 值受限（必须真实 fd）、events 只有
-4 字节且不连续、revents 由内核写（不可控）。
-
-### 3. 与其他设备的差异
-
-smt878u / popsicle 可完整提权：它们的栈几何允许 words 落在用户可控的
-in/out/ex（pselect 3 个 fd_set）。GOT-W29 的 waiter 位置（bits+0x60 →
-task/lock 在 res_in[3]/[4]）没有该窗口。**这是内核栈几何差异，不是实现
-缺陷**。
-
-### 4. 普通 app 域的限制
-
-app 域（untrusted_app）无现成 KASLR 通道（perf/kallsyms/pagemap/dmesg 全
-被拒）；`CMP_REQUEUE_PI` 返回 1（requeue 成功）不走 EDEADLK 回滚；非 root
-cpuset 的 major_only 硬性短路链走的 step[6]。改 QOS 的唯一入口
-`/dev/iaware_qos_ctrl` 被 SELinux 拒。因此普通 app 权限无法触发此 CVE。
+- **do_notify_resume 返回路径覆盖**：`ret_to_user → do_notify_resume` 的 0x1b0
+  字节帧恰好压在 `[E-0x1b0, E)`，任何“就绪 fd 编码”的 select 载体返回时
+  task/lock 都被覆盖；阻塞载体虽绕开覆盖，但几何上无法同时满足
+  “lock 非零”与“无就绪 fd”。
+- **k40 对照**：同为 `4.19.157-perf` 的 Redmi K40 用 shift=1（rt_waiter 在
+  `stack_fds[1]`，全部落在输入位图）可完整提权；GOT-W29 的 futex 帧大
+  （do_futex 0x1a0+），rt_waiter 沉到 `stack_fds[12]`，属**内核构建差异**，
+  不可通过参数/排列“对齐”。
+- **普通 app 域**：KASLR（perf/kallsyms/pagemap/dmesg）、`CMP_REQUEUE_PI`
+  触发、major_only 链走在权限层面均被拒；`/dev/iaware_qos_ctrl` 被 SELinux 拦。
+- KPM/APatch root 属“鸡生蛋”，仅作研究观测工具（见调试工具链），不是提权路径。
 
 ## 调试工具链
 
-自写 KernelPatch 模块（rtmutex-dbg）用于实机观测 fake waiter 与写原语，
-编译基于 LyraVoid/KernelPatch 0.13.5（FolkPatch 同源）头文件。
+自写 KPM（`tools/kpm-debug/rtmutex-dbg.c`，KernelPatch 0.13.5 inline-hook）
+用于实机观测，hook 集：`rt_mutex_adjust_pi`（记录/重建 overlay）、
+`rt_mutex_adjust_prio_chain`（dump waiter）、`__arm64_sys_pselect6`/`do_select`
+（fd_set 观测）、`__arm64_sys_futex`（wait/requeue 追踪）、`rt_mutex_dequeue`
+（step[7] 确认）。加载方式见 `tools/kpm-debug`。
 
-### hook 集
-
-| hook | 作用 |
-|---|---|
-| `rt_mutex_adjust_pi` | 记录 PI 调整；覆盖 overlay 时 skip（清 pi_blocked_on） |
-| `rt_mutex_adjust_prio_chain` | fake walk 无条件 skip；完整 dump waiter |
-| `__arm64_sys_pselect6` / `__arm64_sys_ppoll` | 返回路径清 `_TIF_WORK_MASK`；fd_set 观测 |
-| `do_select` | 内核侧读 `res_in[3]/[4]` |
-| `__arm64_sys_futex` | 追踪 WAIT_REQUEUE_PI / CMP_REQUEUE_PI |
-| `rt_mutex_dequeue` | 确认 step[7] 写原语执行与 tree 形状 |
-
-### 编译
-
-```sh
-cd <KernelPatch>/kpms/rtmutex-dbg
-make TARGET_COMPILE=aarch64-linux-android- \
-  CC=$PREFIX/bin/aarch64-linux-android-clang \
-  LD=$PREFIX/bin/aarch64-linux-android-ld
-```
-
-产出 `rtmutex_dbg.kpm`。编译 flag 必须含
-`-fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-unwind-tables`
-（Makefile 已内置）：clang 默认 PIC 产生 GOT 重定位、默认生成 `.eh_frame`
-（`R_AARCH64_PREL32`），KPM 加载器都不支持 → 加载失败 -1。
-
-### 加载
-
-FolkPatch 的 superkey 是 `su`（不是 APatch 默认的 `KernelPatch`）。用
-`sc_kpm_load` 工具（源码 `sc_kpm_load.c`）：
-
-```sh
-adb shell /data/local/tmp/sc_kpm_load su /sdcard/Download/rtmutex_dbg.kpm  # 加载
-adb shell /data/local/tmp/sc_kpm_load unload rtmutex-dbg su               # 卸载
-adb shell /data/local/tmp/sc_kpm_load ctl rtmutex-dbg counts su           # 计数器
-```
-
-### 一键测试
-
-`run_rtmdbg_test.sh`（设备端 `/data/local/tmp/ghostlock-test/`）：shell 身份
-（`GOT_SLIDE_NO_RT=1` 真实路径）跑 GhostLock，0.5s sync 循环防日志丢失，
-dmesg -w 落盘，90s 自动收网（SIGSTOP 防 soft-lock 重启）。测试前：
-
-```sh
-adb shell 'su -c "sh /sdcard/ghostlock-test/set_debug_no_reboot.sh"'  # 防重启
-```
-
-### 观测点（dmesg `[RTMDBG]`）
-
-- `REPAIR3`：写原语验证时重建 overlay 并改写 next_lock 参数
-- `FAKEWALK skip`：覆盖的 fake walk 被跳过（不写不崩）
-- `prio_chain[N]` / `prio_chain_ret`：walk 调用与返回值（0=走完；
-  4294967261=-EDEADLK）
-- `do_select n=320`：内核侧 res_in[3]/[4]
-- `futex op=13/14`：CMP_REQUEUE_PI / WAIT_REQUEUE_PI
-
-华为 oops/panic 完整栈记录在 `/data/log/bbox/history.log`。
+QEMU 启动 / kernel.patched（SCM+PAN 补丁）见 `firmware/README.md`；
+GDB 断点与内存读取工具：`tools/qemu_read_ram.py`、`tools/patch_kernel_qemu.sh`。
 
 ## 目录
 
 ```
-tools/      验证工具（perf KASLR, EDEADLK 探针, KPM 工具链）
-target/     全部实测偏移
-exploit/    移植的 slide.c（含 EDEADLK 触发改动）
+firmware/                     boot.img 解包产物 + QEMU 启动（kernel.patched）
+exploit/ghostlock-source/     slide.c 移植（EDEADLK 触发、载体、GOT_SLIDE_* 实验开关）
+tools/                        KASLR/EDEADLK 探针、载体扫描器、KPM 工具链
+android_kernel_huawei_sm8250/ 设备内核源码树（外部参考，自带 git，不入库）
+ghostlock-cve-2026-43499-4.19-k40/ 同族 4.19 参考实现（外部参考，不入库）
 ```
 
 ## 致谢
