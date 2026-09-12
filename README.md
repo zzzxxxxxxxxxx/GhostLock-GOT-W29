@@ -36,6 +36,16 @@
 
 ## 漏洞与触发（最终版）
 
+### 触发前提
+
+- shell 权限：`adb shell` 或 Shizuku 均可。
+- 关闭华为两个后台管控服务，使 shell 进程拿到**根 cpuset**（否则触发链不会进入目标路径）：
+
+```sh
+pm disable-user com.huawei.powergenie
+pm disable-user com.huawei.iaware
+```
+
 机制：制造 PI 环（waiter→target→owner→chain→waiter）让
 `FUTEX_CMP_REQUEUE_PI` 走 EDEADLK 回滚，回滚中 `remove_waiter(lock, waiter)`
 用 `current`（requeue 线程）而非 `waiter->task` 清理：
