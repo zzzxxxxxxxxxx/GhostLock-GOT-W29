@@ -7,6 +7,12 @@
 #   adb shell sh /data/local/tmp/device-run.sh --verify-write  # carrier write only
 #   adb shell sh /data/local/tmp/device-run.sh --bench 10      # success rate
 #   adb shell sh /data/local/tmp/device-run.sh --root          # + tmpfs/4755 endgame
+#   adb shell sh /data/local/tmp/device-run.sh --selinux-relax # initialized=0 + AVC
+#   adb shell sh /data/local/tmp/device-run.sh --su-server     # persistent @gl_su
+#
+# Device-day order (see README "SELinux"): --selinux-relax, then verify with a
+# known-denied operation; --su-server keeps a root broker alive for mounts and
+# shells (drive it with `ghostlock_exe --rsh 'CMD'` from another shell).
 #
 # Note: --root (and the standalone --harden) leaf-zero panic_on_oops first, so a
 # clobbered attempt cannot reboot the device if init set panic_on_oops=1.

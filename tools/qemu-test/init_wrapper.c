@@ -51,7 +51,7 @@ int main(void) {
   }
   mkdir("/data", 0755);
   mkdir("/data/local", 0755);
-  mkdir("/data/local/tmp", 0755);
+  mkdir("/data/local/tmp", 0777); /* the exploit runs as uid 2000 */
 
   /* Device analogue: perf_event_paranoid=-1 lets unprivileged shells use
      perf_event_open (the GOT-W29 device runs with -1 too). */
