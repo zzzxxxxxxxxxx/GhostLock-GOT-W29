@@ -9,3 +9,7 @@ tools/perfdata
 # external reference trees (keep out of this repo)
 android_kernel_huawei_sm8250/
 ghostlock-cve-2026-43499-4.19-k40/
+
+# python bytecode cache
+__pycache__/
+*.pyc
