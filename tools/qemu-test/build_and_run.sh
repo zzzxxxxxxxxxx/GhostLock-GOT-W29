@@ -29,8 +29,15 @@ if [ -n "$GLMODE" ]; then
 fi
 (cd "$OUT/root" && find . | cpio -o -H newc 2>/dev/null | gzip -9) > "$OUT/initramfs.cpio.gz"
 
+GDB_ARGS=()
+if [ "${GDB:-1}" != 0 ]; then
+  # NOTE: any TCP client that touches the gdb port halts all vCPUs; use
+  # GDB=0 for unattended runs, or bind to a port you control.
+  GDB_ARGS=(-gdb "tcp::${GDB_PORT:-1234}")
+fi
+
 exec qemu-system-aarch64 -machine virt -no-reboot -cpu cortex-a76 -smp "${SMP:-8}" -m 2048 \
   -kernel firmware/unpacked_boot/kernel.patched \
   -initrd "$OUT/initramfs.cpio.gz" \
   -append "nokaslr rdinit=/init console=ttyAMA0 panic=0 loglevel=6 initcall_blacklist=proc_app_info_init" \
-  -qmp unix:"$OUT/qmp.sock",server,nowait -gdb tcp::1234 -display none -no-shutdown
+  -qmp unix:"$OUT/qmp.sock",server,nowait "${GDB_ARGS[@]}" -display none -no-shutdown
