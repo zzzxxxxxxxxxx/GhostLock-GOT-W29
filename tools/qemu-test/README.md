@@ -1,10 +1,15 @@
 # QEMU 验证器具（kernel.patched）
 
-把 exploit 作为 QEMU guest 的 `/init` 跑：默认现在是
-`--escalate`（端到端提权：perf 泄露自己 task → comm 校验 → cred 写 →
-`getuid()==0`），以**uid 2000** 起跑模拟设备 shell。三种原语的自检
-（指针写 / leaf 零写 / boot_id 读 + restore）用 `--verify-all` 单独跑，
-wrapper 里改 argv 即可。
+把 exploit 作为 QEMU guest 的 `/init` 跑：默认 `--escalate`（端到端提权：
+perf 泄露自己 task → comm 校验 → cred 写 → `getuid()==0`），以 **uid 2000**
+起跑模拟设备 shell。其它模式用 `GLMODE` 传（build_and_run.sh 会写进
+initramfs 的 `/glmode`，wrapper 读出后追加为 argv）：
+
+```sh
+GLMODE="--verify-all" ./build_and_run.sh    # 指针写 + leaf + 读原语 + restore
+GLMODE="--bench 20"   ./build_and_run.sh    # 写原语单 attempt 成功率
+GLMODE="--root"       ./build_and_run.sh    # 提权 + tmpfs/4755 端局自检
+```
 
 ```sh
 ./build_and_run.sh          # 交叉编译 + 打包 initramfs + 启动 QEMU(-gdb/:1234)
@@ -30,6 +35,19 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
 ```
 
 （`--verify-all` 的期望输出仍是 write/leaf/read/restore 四段 PASSED。）
+
+`--bench` 期望：`bench: run i/N ok|FAIL` 逐行，最后
+`bench: x/N single-attempt writes succeeded (P%)`。
+
+`--root` 期望（提权段同上，之后）：
+
+```text
+... [*] root: /data/local/tmp/glrt/glsh (from /proc/self/exe) mode 4755, exec as uid 2000...
+... [+] root: 4755 payload confirmed (uid 2000 -> euid 0)
+```
+
+（QEMU initramfs 没有 shell，payload 退化为本程序自身 + `--glsh-proof`；
+设备上会取 `/system/bin/sh`，回读它以 euid 0 执行的 `id` 输出验证 `uid=0(`。）
 
 说明：
 
@@ -59,3 +77,11 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
   `raw_spin_trylock` 重试循环（upstream `rtmutex.c:585`）里；单核 TCG 下
   `cpu_relax()` 的 `yield` 把整个 VM 冻死（PC 固定在 0xffffff8008162f1c）。
   用 `read_log.py` 默认的 kmsg/GDB 模式即可避免（每次只读 128KB）。
+- **已知 freeze 的判别/应对**：`gdb -ex 'x/i $pc'` 看到 PC 停在
+  `0xffffff8008162f1c`（`rt_mutex_adjust_prio_chain` 内 trylock 重试循环）就说明
+  单 vCPU 被该循环卡死，此时内核日志不再增长，任何等待都不会有结果——直接
+  `pkill qemu-system-aarch64` 重开。真机多核下同样场景只是烧掉一个核，attempt
+  超时后可以重试。
+- `--root` 端局（tmpfs + 4755 payload）代码已就绪，但 QEMU 里还没跑完整一遍：
+  最近一次运行在 `escalate-cred` 成功后、修复/restore 阶段踩到上面的 freeze。
+  下次运行建议 `GLMODE="--root"`，并在卡住时按上面判别重开。
