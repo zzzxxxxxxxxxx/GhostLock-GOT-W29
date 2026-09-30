@@ -68,7 +68,9 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
 - fake `rt_mutex` 用 `empty_zero_page` 的**独立槽位**（每次 attempt 取新偏移
   `+n*0x20`）；**不要**复用同一把锁——walk 会把 `waiters.root/leftmost` 留在锁里
   指向本次 waiter，下一次 walk 会解引用已释放栈并触发 `BUG_ON(w->lock != lock)`。
-- QEMU 使用 `nokaslr` + `--kaslr-base 0xffffff8008080800`；
+- QEMU 使用 `nokaslr` + `--kaslr-base 0xffffff8008080800`；guest 默认
+  `-smp 8`（`SMP=N` 可覆盖），与真机 8 核一致，也避免单核 TCG 下
+  walk 卡死冻住整个 VM——多核时只烧掉一个 vCPU，attempt 超时后仍可重试。
   需要 GDB 观测时 attach `:1234`（rt_mutex_adjust_prio_chain @ 0xffffff8008162d70、
   rt_mutex_adjust_pi @ 0xffffff8008162c58、do_futex @ 0xffffff80081a5248）。
 - **不要用 QMP `pmemsave` 频繁 dump 2GB 内存**：每次都会把 guest 暂停很久，
@@ -82,6 +84,10 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
   单 vCPU 被该循环卡死，此时内核日志不再增长，任何等待都不会有结果——直接
   `pkill qemu-system-aarch64` 重开。真机多核下同样场景只是烧掉一个核，attempt
   超时后可以重试。
-- `--root` 端局（tmpfs + 4755 payload）代码已就绪，但 QEMU 里还没跑完整一遍：
-  最近一次运行在 `escalate-cred` 成功后、修复/restore 阶段踩到上面的 freeze。
-  下次运行建议 `GLMODE="--root"`，并在卡住时按上面判别重开。
+- `--root` 端局（tmpfs + 4755 payload）已在 8 核 QEMU 完整通过：uid 2000 执行
+  `glsh` 返回 `euid=0`，wrapper 标记 `exited status=0x0 (SUCCESS)`。
+- **多 vCPU 的日志坑**：`-smp N>1` 时内核会按 CPU 数协商日志缓冲，把静态
+  `__log_buf` 换成动态分配的更大缓冲（8 核 = 1MB，`log_buf_len` 变量可见），
+  且 GDB 在 vCPU 处于 EL0 时读内核 VA 会失败/返回空。`read_log.py` 因此改为
+  QMP 物理读 + 追 `log_buf` 指针；手工读取时注意这一点（静态缓冲只会停在
+  `log_buf_len min size` 那一行）。

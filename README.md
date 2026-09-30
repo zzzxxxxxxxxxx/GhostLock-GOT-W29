@@ -192,10 +192,14 @@ setuid 真的生效——shell 版本执行 `id > proof.txt` 并回读检查 `ui
 exec/setuid 需要真机验证（mrx 走 policydb.permissive_map + AVC 冲刷，本内核
 符号表里没有 policydb 全局符号，需要另找路线或直接依赖 init_cred 的 SID）。
 
-验证状态：端局代码已就绪；最近一次 QEMU `--root` 运行里 `escalate-cred` 成功
-（`ok=1`），但随后的修复/restore attempt 踩到已知的 walk 卡死（单核 TCG 下
-`rt_mutex_adjust_prio_chain` trylock 重试循环冻住整个 VM，PC=0xffffff8008162f1c），
-端局本身还差一次干净跑通。
+验证状态：**已在 QEMU（8 核 SMP）完整通过**——`escalate-cred` PASSED →
+`escalate-repair-gid` → tmpfs 挂载 + 4755 `glsh` 安装 → uid 2000 子进程执行
+返回 `glsh-proof: uid=2000 euid=0`，wrapper 记录
+`init: ghostlock_exe[--root] exited status=0x0 (SUCCESS)`。
+
+注意：多 vCPU 下内核会把 `__log_buf` 换成动态分配的大缓冲（8 核时 1MB），
+`tools/qemu-test/read_log.py` 已改为从 `log_buf` 指针追实际缓冲区（QMP 物理读，
+不再依赖 GDB 的 VA 翻译——vCPU 在 EL0 时 GDB 读不到内核地址）。
 
 历史验证（均已注入，仅存档）：QEMU GDB 直写悬空 blk；实机 KPM 重建 overlay。
 
