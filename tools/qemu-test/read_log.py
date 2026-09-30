@@ -1,36 +1,77 @@
 #!/usr/bin/env python3
-"""Dump guest RAM over QMP and print the exploit's rendered log lines.
+"""Print the exploit's log lines from the QEMU guest.
 
-Usage: read_log.py [/tmp/ghostlock-qemu/qmp.sock] [--wait SECONDS]
+Default (`--kmsg`): dump the kernel log buffer over GDB -- the qemu-test
+harness runs the exploit with `--log-file /dev/kmsg`, so its lines land in
+__log_buf (128KB, cheap to read; the vCPU is paused only for a moment).
 
-Under TCG the guest takes a few minutes to boot and run the exploit, so this
-script re-dumps RAM every 15s until matching lines appear (or --wait elapses,
-default 300s).
+`--ram`: dump 2GB guest RAM over QMP and grep the log file's page cache
+(works without GDB, but pauses the VM for a long time).
+
+Both modes poll every 15s until something matches or --wait elapses.
+
+Usage: read_log.py [--kmsg|--ram] [--wait SECONDS] [QMP_SOCK]
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 
+KLOG_BUF_VA = 0xFFFFFF800B7599DC  # __log_buf (nokaslr kernel.patched)
+KLOG_BUF_SIZE = 0x20000           # CONFIG_LOG_BUF_SHIFT=17
+PRINT = re.compile(r"slide |PASSED|FAILED")
+
+mode = "kmsg"
 sock_path = "/tmp/ghostlock-qemu/qmp.sock"
 wait = 300.0
+until = PRINT
 args = sys.argv[1:]
 i = 0
 while i < len(args):
-    if args[i] == "--wait" and i + 1 < len(args):
+    if args[i] == "--ram":
+        mode = "ram"
+        i += 1
+    elif args[i] == "--kmsg":
+        mode = "kmsg"
+        i += 1
+    elif args[i] == "--wait" and i + 1 < len(args):
         wait = float(args[i + 1])
+        i += 2
+    elif args[i] == "--until" and i + 1 < len(args):
+        until = re.compile(args[i + 1])
         i += 2
     else:
         sock_path = args[i]
         i += 1
 
-GREP = r"^[0-9]+\.[0-9]{3} [0-9]+ \[[!*+-]\]"
+
+def grep_lines(text):
+    return "\n".join(l for l in text.splitlines() if PRINT.search(l))
 
 
-def dump_lines():
+def dump_kmsg():
+    path = tempfile.mktemp()
+    try:
+        subprocess.run(
+            ["gdb", "-batch", "-q",
+             "-ex", "target remote :1234",
+             "-ex", "dump binary memory %s 0x%x 0x%x"
+                    % (path, KLOG_BUF_VA, KLOG_BUF_VA + KLOG_BUF_SIZE),
+             "-ex", "detach"],
+            capture_output=True, text=True, timeout=120)
+        out = subprocess.run(["strings", "-a", path],
+                             capture_output=True, text=True).stdout
+        return grep_lines(out)
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def dump_ram():
     ram = tempfile.NamedTemporaryFile(delete=False)
     path = ram.name
     ram.close()
@@ -51,20 +92,27 @@ def dump_lines():
                 break
         s.close()
         out = subprocess.run(
-            "strings -a -n 10 %s | grep -aE '%s' | sort -u" % (path, GREP),
-            shell=True, capture_output=True, text=True)
-        return out.stdout
+            "strings -a -n 6 %s | sort -u" % path,
+            shell=True, capture_output=True, text=True).stdout
+        return grep_lines(out)
     finally:
         os.unlink(path)
 
 
 deadline = time.time() + wait
+text = ""
 while True:
-    text = dump_lines()
-    if text.strip() or time.time() >= deadline:
+    try:
+        raw = dump_kmsg() if mode == "kmsg" else dump_ram()
+    except Exception as exc:  # keep polling; the guest may not be up yet
+        raw = ""
+        sys.stderr.write("read_log: %s\n" % exc)
+    if raw.strip():
+        text = raw
+    if until.search(text) or time.time() >= deadline:
         break
-    sys.stderr.write("read_log.py: no log lines yet "
-                     "(%ds left), retrying...\n" % int(deadline - time.time()))
+    sys.stderr.write("read_log.py: nothing yet (%ds left), retrying...\n"
+                     % int(deadline - time.time()))
     time.sleep(15)
-sys.stdout.write(text)
+sys.stdout.write(text + ("\n" if text else ""))
 sys.exit(0 if text.strip() else 1)
