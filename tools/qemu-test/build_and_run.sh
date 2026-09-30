@@ -26,7 +26,7 @@ if [ -n "$GLMODE" ]; then
 fi
 (cd "$OUT/root" && find . | cpio -o -H newc 2>/dev/null | gzip -9) > "$OUT/initramfs.cpio.gz"
 
-exec qemu-system-aarch64 -machine virt -no-reboot -cpu cortex-a76 -smp 1 -m 2048 \
+exec qemu-system-aarch64 -machine virt -no-reboot -cpu cortex-a76 -smp "${SMP:-8}" -m 2048 \
   -kernel firmware/unpacked_boot/kernel.patched \
   -initrd "$OUT/initramfs.cpio.gz" \
   -append "nokaslr rdinit=/init console=ttyAMA0 panic=0 loglevel=6 initcall_blacklist=proc_app_info_init" \
