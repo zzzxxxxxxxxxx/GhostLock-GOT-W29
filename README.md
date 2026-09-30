@@ -229,5 +229,7 @@ ghostlock-cve-2026-43499-4.19-k40/ 同族 4.19 参考实现（外部参考，不
   [soralis0912/CVE-2026-43499-aristotle](https://github.com/soralis0912/CVE-2026-43499-aristotle),
   [JoinChang/ghostlock-oneplus](https://github.com/JoinChang/ghostlock-oneplus),
   [Wtrwx/smt878u-ionstack-poc](https://github.com/Wtrwx/smt878u-ionstack-poc) (GPL-3.0)
+- 同 CVE 华为 MRX-W09 移植（4.14.116，已完整提权）：
+  [0ch4/mrx-w09-ghostlock](https://gitlab.com/0ch4/mrx-w09-ghostlock)
 - CVE: [NVD](https://nvd.nist.gov/vuln/detail/CVE-2026-43499),
   [Red Hat RHSB-2026-010](https://access.redhat.com/security/vulnerabilities/RHSB-2026-010)
