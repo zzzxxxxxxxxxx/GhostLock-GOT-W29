@@ -297,8 +297,8 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 `--wait-seconds N`、`--requeue-ms N`、`--no-rt`、`--rt-prio N`、
 `--probe-cycle`（kernel.patched/QEMU 必需）、`--noconsume`、`--hold`、
 `--detach`、`--fsync`、`--verify-write`、`--verify-leaf`、`--verify-read`、
-`--verify-all`、`--escalate`、`--bench N`。**环境变量已全部移除**（含旧
-`GOT_*` 实验开关）。
+`--verify-all`、`--escalate`、`--bench N`、`--root`、`--harden`。**环境变量已
+全部移除**（含旧 `GOT_*` 实验开关）。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的
@@ -322,6 +322,10 @@ adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
 （`futex_exit_release` 会再走悬空 `pi_blocked_on`，软挂/panic）；要停止用
 `kill -STOP`，清理优先重启。输出里若没有 `requeue=-1/35`（EDEADLK），改用
 `--probe-cycle` 重试（值持有环在部分固件上更稳）。
+
+失败 attempt 可能触发 oops：内核编译默认 `panic_on_oops=0`，但若华为 init
+把它置 1，设备会重启——先 `cat /proc/sys/kernel/panic_on_oops` 确认；需要时用
+`--harden`（或直接 `--root`，它会自动先做）leaf 零写把它清零。
 
 ## 调试工具链
 

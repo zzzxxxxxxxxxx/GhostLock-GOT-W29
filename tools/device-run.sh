@@ -8,6 +8,9 @@
 #   adb shell sh /data/local/tmp/device-run.sh --bench 10      # success rate
 #   adb shell sh /data/local/tmp/device-run.sh --root          # + tmpfs/4755 endgame
 #
+# Note: --root (and the standalone --harden) leaf-zero panic_on_oops first, so a
+# clobbered attempt cannot reboot the device if init set panic_on_oops=1.
+#
 # Safety: the exploit parks/stops itself after a consumed dangling pointer; do
 # NOT `kill -9` it (futex_exit_release would walk the dangling pi_blocked_on).
 # To stop it use `kill -STOP`, and prefer a reboot to clean up.
