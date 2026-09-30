@@ -1,7 +1,7 @@
 /* sc_kpm_load - minimal supercall KPM_LOAD tester for GOT-W29/FolkPatch.
  *
  * usage: sc_kpm_load [key] [kpm_path] [args]
- *   default key: KernelPatch, path: /sdcard/Download/rtmutex-dbg.kpm
+ *   default key: KernelPatch, path: /sdcard/Download/rtmutex_dbg.kpm
  *
  * Mirrors apd's ver_and_cmd packaging (KernelPatch supercall ABI).
  */
@@ -33,7 +33,7 @@ static long ver_and_cmd(const char *key, long cmd)
 int main(int argc, char **argv)
 {
     const char *key = argc > 1 ? argv[1] : "KernelPatch";
-    const char *path = argc > 2 ? argv[2] : "/sdcard/Download/rtmutex-dbg.kpm";
+    const char *path = argc > 2 ? argv[2] : "/sdcard/Download/rtmutex_dbg.kpm";
     const char *args = argc > 3 ? argv[3] : "";
     long rc;
 

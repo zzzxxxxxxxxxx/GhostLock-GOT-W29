@@ -19,9 +19,10 @@ GLMODE="--root"       ./build_and_run.sh    # 提权 + tmpfs/4755 端局自检
 ```
 
 exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志直接进内核
-环形缓冲；`read_log.py` 默认经 GDB 读 128KB `__log_buf`，几乎不打扰 guest，
-每 15s 重试直到出现日志行（默认最多等 300s，`--wait N` 调整）。`--ram` 模式则
-走 QMP `pmemsave` 导 2GB 内存再 grep，不需要 GDB 但会把 guest 暂停很久。
+日志缓冲；`read_log.py` 走 QMP `pmemsave` 读**物理内存**（不受 vCPU 所处 EL 影响），
+并追 `log_buf` 指针取实际缓冲区（多 vCPU 时内核会把静态 `__log_buf` 换成按 CPU
+协商出来的大缓冲）。每 15s 重试直到出现日志行（默认最多等 300s，`--wait N` 调整），
+`--until REGEX` 可指定结束条件（如 `--until 'single-attempt writes succeeded'`）。
 
 期望输出（`--escalate` 节选）：
 

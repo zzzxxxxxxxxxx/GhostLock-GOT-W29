@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # run_rtmdbg_test.sh - run GhostLock once with rtmutex-dbg KPM watching.
-# REAL attack path: run as shell (uid 2000), NO RT boost (GOT_SLIDE_NO_RT=1):
-# the pselect-overlay RT fix needs root and is NOT part of the real chain.
+# REAL attack path: run as shell (uid 2000), NO RT boost (--no-rt): the RT
+# fix needs root and is NOT part of the real chain.
 # Launch via: adb shell 'sh /data/local/tmp/ghostlock-test/run_rtmdbg_test.sh'
 #
 # Watches: dmesg [RTMDBG] (module must be loaded first via sc_kpm_load)
@@ -26,12 +26,8 @@ sleep 1
 
 (
   cd "$DST" || exit 1
-  POC_LOG_FILE="$DST/rtmdbg_poc.log" \
-  GOT_FULL_RUN=1 \
-  GOT_VERIFY_WRITE=1 \
-  GOT_SLIDE_ATTEMPTS=1 \
-  GOT_SLIDE_NO_RT=1 \
-  ./ghostlock_exe > "$DST/rtmdbg_exe.log" 2>&1
+  ./ghostlock_exe --verify-all --no-rt --attempts 1 \
+      --log-file "$DST/rtmdbg_poc.log" > "$DST/rtmdbg_exe.log" 2>&1
 ) &
 EXE_PID=$!
 

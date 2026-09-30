@@ -339,7 +339,7 @@ adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
 
 ## 调试工具链
 
-`tools/kpm-debug/rtmutex-dbg.c`，KernelPatch 0.13.5 inline-hook，用于实机观测，
+`tools/kpm-debug/rtmutex_dbg.c`，KernelPatch 0.13.5 inline-hook，用于实机观测，
 hook 集：`rt_mutex_adjust_pi`（记录/重建 overlay）、
 `rt_mutex_adjust_prio_chain`（dump waiter）、`__arm64_sys_pselect6`/`do_select`
 （fd_set 观测）、`__arm64_sys_futex`（wait/requeue 追踪）、`rt_mutex_dequeue`

@@ -50,8 +50,6 @@ static unsigned long g_skip_calls;
 static unsigned long g_ownerful_calls;
 static uint64_t g_poll_fds;
 static unsigned long g_poll_fd0_fd;
-static unsigned long g_poll_fd0_events;
-static unsigned long g_poll_fd0_revents;
 
 /* resolved kfuncs */
 long kfunc_def(probe_kernel_read)(void *dst, const void *src, unsigned long size);
@@ -432,7 +430,7 @@ static void before_dequeue(hook_fargs2_t *args, void *udata)
 static void before_do_poll(hook_fargs3_t *args, void *udata)
 {
     g_poll_fds = (uint64_t)args->arg0;
-    g_poll_fd0_fd = g_poll_fd0_events = g_poll_fd0_revents = 0;
+    g_poll_fd0_fd = 0;
     if (args->arg0 && kf_probe_kernel_read) {
         kf_probe_kernel_read(&g_poll_fd0_fd, (void *)((uint64_t)args->arg0 + 0), 8);
     }

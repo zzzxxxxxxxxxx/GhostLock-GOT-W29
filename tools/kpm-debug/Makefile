@@ -7,7 +7,6 @@ ifndef KP_DIR
 endif
 
 CC = $(TARGET_COMPILE)gcc
-LD = $(TARGET_COMPILE)ld
 
 CFLAGS ?= -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-unwind-tables
 

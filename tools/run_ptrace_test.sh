@@ -1,4 +1,10 @@
 #!/system/bin/sh
+# ARCHIVED (superseded): the ptrace NT_PRFPREG carrier and the
+# `ghostlock_ptrace` binary were removed when MCAST became the only carrier,
+# and the GOT_* environment variables no longer exist.  This script cannot run
+# against the current exploit and is kept for history only -- see
+# tools/device-run.sh for the current helper.
+#
 # GOT-W29 ptrace NT_PRFPREG carrier: unmodified-kernel write verification.
 # Run via adb shell (uid 2000 shell, NOT su) so ghostlock_ptrace executes in
 # the real attack context:
