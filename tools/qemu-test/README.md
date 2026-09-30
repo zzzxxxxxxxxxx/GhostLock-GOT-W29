@@ -1,8 +1,10 @@
 # QEMU 验证器具（kernel.patched）
 
-把重构后的 exploit 直接作为 QEMU guest 的 `/init` 跑 `--verify-all`，
-无需真机即可验证整条链（EDEADLK → MCAST 载体 → sched_setattr → 校验）以及
-三种原语：指针写、leaf 零写、boot_id 读原语（外加 restore）。
+把 exploit 作为 QEMU guest 的 `/init` 跑：默认现在是
+`--escalate`（端到端提权：perf 泄露自己 task → comm 校验 → cred 写 →
+`getuid()==0`），以**uid 2000** 起跑模拟设备 shell。三种原语的自检
+（指针写 / leaf 零写 / boot_id 读 + restore）用 `--verify-all` 单独跑，
+wrapper 里改 argv 即可。
 
 ```sh
 ./build_and_run.sh          # 交叉编译 + 打包 initramfs + 启动 QEMU(-gdb/:1234)
@@ -16,28 +18,31 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
 每 15s 重试直到出现日志行（默认最多等 300s，`--wait N` 调整）。`--ram` 模式则
 走 QMP `pmemsave` 导 2GB 内存再 grep，不需要 GDB 但会把 guest 暂停很久。
 
-期望输出（节选）：
+期望输出（`--escalate` 节选）：
 
 ```text
-... [*] slide write test: shape=pointer value=ffffff800b412320 target=ffffff800b7f8b6c, ...
-... [+] slide write boot_id raw=...2023410b80ffffff lo=0 hi=ffffff800b412320 exp_lo=0 exp_hi=ffffff800b412320 ok=1
-... [+] slide write test PASSED
-... [*] slide leaf test: shape=leaf value=0000000000000000 target=ffffff800b7f8b64, ...
-... [+] slide leaf boot_id raw=...2023410b80ffffff lo=0 hi=ffffff800b412320 exp_lo=0 exp_hi=0 ok=1
-... [+] slide leaf test PASSED
-... [*] slide read test: shape=pointer value=ffffff800b4cd738 target=ffffff800b4cd730, ...
-... [+] slide read boot_id raw=100000002401000030d74c0b80ffffff lo=0000012400000010 hi=ffffff800b4cd730 ... ok=1
-... [+] slide read test PASSED
-... [+] slide restore test PASSED
-... [+] slide verify all PASSED
+... [*] perf task leak: tid=236 samples=1292 abi=1292 in_sched=27 in_window=12 cands=1 best=ffffffc07a373240 (n=12)
+... [*] escalate: candidate 1/1 task=ffffffc07a373240 (n=12)
+... [+] slide read8 boot_id raw=67686f73746c6f6330d74c0b80ffffff lo=636f6c74736f6867 ... ok=1   # "ghostloc"
+... [+] slide escalate-cred test PASSED
+... [+] slide child pid=246 uid=0 ...                       # 子进程已是 root
+...     init: ghostlock_exe exited status=0x0 (SUCCESS)     # wrapper 退出码标记
 ```
+
+（`--verify-all` 的期望输出仍是 write/leaf/read/restore 四段 PASSED。）
 
 说明：
 
 - `init_wrapper.c` 会挂载 `/proc` 和 `devtmpfs`、给 fd 0/1/2 补 `/dev/null`
-  （QEMU 无控制台，否则 `pipe()` 会占用 fd 0/1）、然后 fork 出 exploit 并
-  自己保持 PID 1 存活（`/init` 退出会让内核 panic "Attempted to kill init"，
-  日志就没了）。
+  （QEMU 无控制台，否则 `pipe()` 会占用 fd 0/1）、关掉内核 printk 限流
+  （`printk_ratelimit=0`，否则最终结果行被 `output lines suppressed` 吞掉），
+  然后以 uid 2000 + 补充组 3003（`CONFIG_ANDROID_PARANOID_NETWORK` 要求
+  inet 组才能建 AF_INET socket，真机 shell 同款）fork 出 exploit，并自己保持
+  PID 1 存活；exploit 退出后 wrapper 会把退出码写进 `/dev/kmsg`
+  （`init: ghostlock_exe exited status=... (SUCCESS)`），作为一个不受 exploit
+  日志影响的独立判据。
+- exploit 以 `--no-rt --attempts 4` 跑（设备 shell 拿不到 RT；walk 偶发卡在
+  `rt_mutex_adjust_prio_chain` 的 `raw_spin_trylock` 重试循环，靠 attempt 重试）。
 - `carrier=-1/22`（EINVAL）是预期的：拷贝完成后 `ip_mc_source` 因假地址组失败；
   拷贝本身已发生（`write_ok=1` 即证明）。
 - 写目标为 `sysctl_bootid + 8`：`proc_do_uuid()` 在 `bootid[8]==0` 时会重新生成
