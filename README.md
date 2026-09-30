@@ -345,8 +345,6 @@ firmware/                     boot.img 解包产物 + QEMU 启动（kernel.patch
 exploit/ghostlock-source/     MCAST 载体写原语（main/util/slide/perf，命令行参数）
 tools/                        KASLR/EDEADLK 探针、载体扫描器、KPM 工具链、
                               QEMU 验证器具（qemu-test/）
-android_kernel_huawei_sm8250/ 设备内核源码树（外部参考，自带 git，不入库）
-ghostlock-cve-2026-43499-4.19-k40/ 同族 4.19 参考实现（外部参考，不入库）
 ```
 
 ## 致谢
