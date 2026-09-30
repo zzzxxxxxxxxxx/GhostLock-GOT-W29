@@ -61,11 +61,19 @@ int main(void) {
     close(pfd);
   }
   /* /dev/kmsg logging is ratelimited by default and the exploit logs a lot:
-     the final result lines were suppressed in earlier runs. */
-  int rfd = open("/proc/sys/kernel/printk_ratelimit", O_WRONLY);
-  if (rfd >= 0) {
-    (void)!write(rfd, "0\n", 2);
-    close(rfd);
+     the final result lines were suppressed in earlier runs
+     ("ghostlock_exe: N output lines suppressed due to ratelimiting").
+     Note: interval=0 alone did NOT disable it on this Huawei kernel, so raise
+     the burst budget as well. */
+  const char *rl_files[] = {"/proc/sys/kernel/printk_ratelimit",
+                            "/proc/sys/kernel/printk_ratelimit_burst"};
+  const char *rl_vals[] = {"0\n", "1000000\n"};
+  for (int i = 0; i < 2; i++) {
+    int fd = open(rl_files[i], O_WRONLY);
+    if (fd >= 0) {
+      (void)!write(fd, rl_vals[i], strlen(rl_vals[i]));
+      close(fd);
+    }
   }
 
   /* /glmode: up to 4 ';'-separated groups, each up to 7 argv words. */
