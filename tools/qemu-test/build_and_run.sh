@@ -14,7 +14,7 @@ SRC=exploit/ghostlock-source/src
 OUT=${OUT:-/tmp/ghostlock-qemu}
 mkdir -p "$OUT/build" "$OUT/root"
 
-for f in main util slide perf main_exe; do
+for f in main util slide su perf main_exe; do
   aarch64-linux-gnu-gcc -O2 -g0 -Wall -Wextra -Wno-unused-parameter \
     -Wno-sign-compare -I"$SRC" -DTARGET_CONFIG_H='"target.h"' \
     -c "$SRC/$f.c" -o "$OUT/build/$f.o"
