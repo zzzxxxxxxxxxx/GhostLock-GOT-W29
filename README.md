@@ -355,6 +355,11 @@ ghostlock-cve-2026-43499-4.19-k40/ 同族 4.19 参考实现（外部参考，不
   [0ch4/mrx-w09-ghostlock](https://gitlab.com/0ch4/mrx-w09-ghostlock)**——
   本项目参考价值最高的一份工作：投递载体（setsockopt 系）与后利用链思路都源于它，
   没有它本项目会卡在"用户态数据投不到悬空 waiter"这一步。
+- **[@sudaoer](https://github.com/sudaoer) 在
+  [issue #1](https://github.com/zzzxxxxxxxxxx/GhostLock-GOT-W29/issues/1)
+  的建议**——用系统包内核镜像 + SELinux 规则复刻 QEMU 虚拟机、外部 gdb 调试、
+  无限重试，跑通再上真机。本项目的 QEMU 验证路线（kernel.patched、
+  `tools/qemu-test/` 自检、fork-per-attempt 重试）由此而来。
 - 上游 PoC: [x-spy/CVE-2026-43499-popsicle](https://github.com/x-spy/CVE-2026-43499-popsicle),
   [soralis0912/CVE-2026-43499-aristotle](https://github.com/soralis0912/CVE-2026-43499-aristotle),
   [JoinChang/ghostlock-oneplus](https://github.com/JoinChang/ghostlock-oneplus),
