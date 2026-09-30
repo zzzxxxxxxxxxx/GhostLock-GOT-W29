@@ -258,9 +258,6 @@ AF_INET（QEMU 实测选项 43/44 均走 0x108 拷贝）。
 
 其余事实：
 
-- **k40 对照**：同为 `4.19.157-perf` 的 Redmi K40 用 shift=1 全落输入位图可提权；
-  GOT-W29 的 futex 帧大（do_futex 0x1a0+），rt_waiter 沉到 `stack_fds[12]`；
-  现在有 MCAST 路径，不再需要 select 编码。
 - **普通 app 域**：KASLR（perf/kallsyms/pagemap/dmesg）、`CMP_REQUEUE_PI`
   触发、major_only 链走在权限层面均被拒；`/dev/iaware_qos_ctrl` 被 SELinux 拦。
 - KPM/APatch root 属“鸡生蛋”，仅作研究观测工具（见调试工具链）。
