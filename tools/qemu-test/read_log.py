@@ -23,7 +23,7 @@ import time
 
 KLOG_BUF_VA = 0xFFFFFF800B7599DC  # __log_buf (nokaslr kernel.patched)
 KLOG_BUF_SIZE = 0x20000           # CONFIG_LOG_BUF_SHIFT=17
-PRINT = re.compile(r"slide |escalate|perf task|PASSED|FAILED")
+PRINT = re.compile(r"slide |escalate|perf task|root:|bench:|PASSED|FAILED")
 
 mode = "kmsg"
 sock_path = "/tmp/ghostlock-qemu/qmp.sock"

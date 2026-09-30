@@ -19,6 +19,11 @@ done
 aarch64-linux-gnu-gcc -static -pthread -o "$OUT/root/ghostlock_exe" "$OUT"/build/*.o
 aarch64-linux-gnu-gcc -static -O2 -o "$OUT/root/init" tools/qemu-test/init_wrapper.c
 chmod 755 "$OUT/root/init" "$OUT/root/ghostlock_exe"
+# Optional extra argv for the wrapper (e.g. GLMODE="--bench 20")
+rm -f "$OUT/root/glmode"
+if [ -n "$GLMODE" ]; then
+  printf '%s\n' "$GLMODE" > "$OUT/root/glmode"
+fi
 (cd "$OUT/root" && find . | cpio -o -H newc 2>/dev/null | gzip -9) > "$OUT/initramfs.cpio.gz"
 
 exec qemu-system-aarch64 -machine virt -no-reboot -cpu cortex-a76 -smp 1 -m 2048 \

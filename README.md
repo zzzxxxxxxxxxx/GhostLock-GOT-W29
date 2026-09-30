@@ -21,7 +21,11 @@
    已排除的机制：pselect/select、ptrace、import_iovec、ppoll、SCTP（实测 0x158）。
 4. **设备端剩余工作**：MCAST setsockopt 的 SELinux 放行验证（mrx 在 EMUI 下以
    shell 身份使用同款载体提权成功，预期可行）、真机返回路径/park 行为复核
-   （可用 KPM 直接观测 W）、以及 HKIP/后利用链（原课题，未变）。
+   （可用 KPM 直接观测 W）、以及后利用链的 SELinux 适配（机制已实现，见
+   `--root`）。**HKIP 差异**：GOT-W29 内核符号表与镜像里没有 `hkip_*`/
+   hypervisor 挂钩，全镜像 97 处 `hvc` 指令也都不在 cred/cap/SELinux 路径上
+   （只有 KVM/SMCCC/调试传输驱动），即 mrx 那套 hypervisor xid 保护在本机
+   很可能不存在——真机可直接按普通 root 流程走。
 
 ---
 
@@ -175,6 +179,24 @@ init: ghostlock_exe exited status=0x0 (SUCCESS)              # wrapper 独立退
 返回路径 clobber），表现为该 attempt 超时；靠 `--attempts N` 重试（设备端同
 mrx：重试到成功）。
 
+### 后利用链（`--root`，端局机制在 QEMU 可测）
+
+`--root` = `--escalate` + 端局：挂 tmpfs 到 `/data/local/tmp/glrt`，把
+`/system/bin/sh`（无 shell 时退化为本程序自身）复制进去并
+`chown 0:0; chmod 4755`，然后 fork 一个 uid 2000 的子进程 exec 它，验证
+setuid 真的生效——shell 版本执行 `id > proof.txt` 并回读检查 `uid=0(`；
+自身版本走 `--glsh-proof`（打印 uid/euid，euid==0 才返回 0）。
+
+设备侧待确认：cred→init_cred 后本进程持全 caps 且 `cred->security` 来自
+`init_cred`，但 `/system/bin/sh` 的 SELinux 标签/挂载点上下文是否放行
+exec/setuid 需要真机验证（mrx 走 policydb.permissive_map + AVC 冲刷，本内核
+符号表里没有 policydb 全局符号，需要另找路线或直接依赖 init_cred 的 SID）。
+
+验证状态：端局代码已就绪；最近一次 QEMU `--root` 运行里 `escalate-cred` 成功
+（`ok=1`），但随后的修复/restore attempt 踩到已知的 walk 卡死（单核 TCG 下
+`rt_mutex_adjust_prio_chain` trylock 重试循环冻住整个 VM，PC=0xffffff8008162f1c），
+端局本身还差一次干净跑通。
+
 历史验证（均已注入，仅存档）：QEMU GDB 直写悬空 blk；实机 KPM 重建 overlay。
 
 ### 关键偏移（boot.elf 反汇编实测，`exploit/ghostlock-source/src/target.h`）
@@ -261,6 +283,7 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 
 # 示例组合
 ./ghostlock_exe --verify-write --attempts 5 --no-rt --hold
+./ghostlock_exe --root --no-rt --attempts 4              # 提权 + 4755 端局自检
 ./ghostlock_exe --verify-all --probe-cycle \
                 --kaslr-base 0xffffff8008080800 \
                 --log-file /data/local/tmp/gl.log      # QEMU/nokaslr
@@ -270,16 +293,36 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 `--wait-seconds N`、`--requeue-ms N`、`--no-rt`、`--rt-prio N`、
 `--probe-cycle`（kernel.patched/QEMU 必需）、`--noconsume`、`--hold`、
 `--detach`、`--fsync`、`--verify-write`、`--verify-leaf`、`--verify-read`、
-`--verify-all`、`--escalate`。**环境变量已全部移除**（含旧 `GOT_*` 实验开关）。
+`--verify-all`、`--escalate`、`--bench N`。**环境变量已全部移除**（含旧
+`GOT_*` 实验开关）。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的
 printf 会写进结果管道）。
 
+### 设备端试跑（真机恢复后）
+
+`tools/device-run.sh`（`/system/bin/sh`，推送到 `/data/local/tmp` 执行）：
+关闭 powergenie/iaware、sync、运行、回读日志。默认
+`--escalate --no-rt --attempts 4 --hold`。
+
+```sh
+adb push exploit/ghostlock-source/build/bin/ghostlock_exe /data/local/tmp/
+adb push tools/device-run.sh /data/local/tmp/
+adb shell sh /data/local/tmp/device-run.sh                 # 端到端提权
+adb shell sh /data/local/tmp/device-run.sh --verify-write  # 只验证载体写
+adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
+```
+
+安全边界：消费过悬空指针的进程必须 park/停住，**不要 `kill -9`**
+（`futex_exit_release` 会再走悬空 `pi_blocked_on`，软挂/panic）；要停止用
+`kill -STOP`，清理优先重启。输出里若没有 `requeue=-1/35`（EDEADLK），改用
+`--probe-cycle` 重试（值持有环在部分固件上更稳）。
+
 ## 调试工具链
 
-自写 KPM（`tools/kpm-debug/rtmutex-dbg.c`，KernelPatch 0.13.5 inline-hook）
-用于实机观测，hook 集：`rt_mutex_adjust_pi`（记录/重建 overlay）、
+`tools/kpm-debug/rtmutex-dbg.c`，KernelPatch 0.13.5 inline-hook，用于实机观测，
+hook 集：`rt_mutex_adjust_pi`（记录/重建 overlay）、
 `rt_mutex_adjust_prio_chain`（dump waiter）、`__arm64_sys_pselect6`/`do_select`
 （fd_set 观测）、`__arm64_sys_futex`（wait/requeue 追踪）、`rt_mutex_dequeue`
 （step[7] 确认）。加载方式见 `tools/kpm-debug`。
