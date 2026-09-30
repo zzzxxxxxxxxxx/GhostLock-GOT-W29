@@ -201,6 +201,19 @@ exec/setuid 需要真机验证（mrx 走 policydb.permissive_map + AVC 冲刷，
 `tools/qemu-test/read_log.py` 已改为从 `log_buf` 指针追实际缓冲区（QMP 物理读，
 不再依赖 GDB 的 VA 翻译——vCPU 在 EL0 时 GDB 读不到内核地址）。
 
+### 成功率与失败模式（QEMU 8 核实测）
+
+`--bench 8`（每轮独立、单 attempt、无重试的指针写）：可见的 **6/6 轮全部一次成功**
+——后 2 轮与汇总行被内核 kmsg 限流吞掉（日志里可见
+`ghostlock_exe: 55 output lines suppressed due to ratelimiting`），因此这是下界；
+harness 已把 `printk_ratelimit_burst` 调大，需要精确数字时重跑 `--bench N`。
+
+失败不是免费的：约每 5–10 个 attempt 会有一个的 fake waiter 被返回路径 clobber，
+表现为 walk 中 oops（`Internal error … rt_mutex_adjust_prio_chain`，
+`exited with preempt_count 3`）；QEMU 里一次这样的失败曾把整个 guest 打成
+"全 vCPU idle、日志停更"（missed wakeup）。设备端对策：先用 `--harden` 清
+`panic_on_oops`、用 `--attempts` 控制重试次数、失败后看 dmesg 再决定是否继续。
+
 历史验证（均已注入，仅存档）：QEMU GDB 直写悬空 blk；实机 KPM 重建 overlay。
 
 ### 关键偏移（boot.elf 反汇编实测，`exploit/ghostlock-source/src/target.h`）
