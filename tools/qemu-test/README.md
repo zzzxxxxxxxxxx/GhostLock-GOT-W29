@@ -84,6 +84,13 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
   单 vCPU 被该循环卡死，此时内核日志不再增长，任何等待都不会有结果——直接
   `pkill qemu-system-aarch64` 重开。真机多核下同样场景只是烧掉一个核，attempt
   超时后可以重试。
+- **第二种失败模式（oops 后 wedged）**：被 clobber 的 overlay 会让 walk 在
+  `rt_mutex_adjust_prio_chain` 里解引用垃圾指针并 oops
+  （样例：`Unable to handle kernel paging request at ffffff800ce83cf8`，
+  `exited with preempt_count 3`）。oops 本身只杀 attempt 子进程，但内核结构可能
+  已被打坏：实测整个 guest 变成所有 vCPU idle、父进程/ log 都不再前进（missed
+  wakeup），此时同样只能重开。判别：`read_log.py` 长时间无新行 + `info threads`
+  全是 halted。
 - `--root` 端局（tmpfs + 4755 payload）已在 8 核 QEMU 完整通过：uid 2000 执行
   `glsh` 返回 `euid=0`，wrapper 标记 `exited status=0x0 (SUCCESS)`。
 - **多 vCPU 的日志坑**：`-smp N>1` 时内核会按 CPU 数协商日志缓冲，把静态
