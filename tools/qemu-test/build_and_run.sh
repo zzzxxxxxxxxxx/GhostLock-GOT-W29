@@ -1,0 +1,28 @@
+#!/bin/bash
+# Build the exploit with a cross gcc and run its --verify-write self test as
+# /init under QEMU (kernel.patched, nokaslr).  Usage: ./build_and_run.sh
+#
+# Requires: aarch64-linux-gnu-gcc, qemu-system-aarch64, cpio, and
+# firmware/unpacked_boot/kernel.patched.  Read the result with read_log.py
+# (about 90s after start) or attach GDB to :1234.
+set -e
+cd "$(dirname "$0")/../.."          # repo root
+SRC=exploit/ghostlock-source/src
+OUT=${OUT:-/tmp/ghostlock-qemu}
+mkdir -p "$OUT/build" "$OUT/root"
+
+for f in main util slide perf main_exe; do
+  aarch64-linux-gnu-gcc -O2 -g0 -Wall -Wextra -Wno-unused-parameter \
+    -Wno-sign-compare -I"$SRC" -DTARGET_CONFIG_H='"target.h"' \
+    -c "$SRC/$f.c" -o "$OUT/build/$f.o"
+done
+aarch64-linux-gnu-gcc -static -pthread -o "$OUT/root/ghostlock_exe" "$OUT"/build/*.o
+aarch64-linux-gnu-gcc -static -O2 -o "$OUT/root/init" tools/qemu-test/init_wrapper.c
+chmod 755 "$OUT/root/init" "$OUT/root/ghostlock_exe"
+(cd "$OUT/root" && find . | cpio -o -H newc 2>/dev/null | gzip -9) > "$OUT/initramfs.cpio.gz"
+
+exec qemu-system-aarch64 -machine virt -no-reboot -cpu cortex-a76 -smp 1 -m 2048 \
+  -kernel firmware/unpacked_boot/kernel.patched \
+  -initrd "$OUT/initramfs.cpio.gz" \
+  -append "nokaslr rdinit=/init console=ttyAMA0 panic=0 loglevel=6 initcall_blacklist=proc_app_info_init" \
+  -qmp unix:"$OUT/qmp.sock",server,nowait -gdb tcp::1234 -display none -no-shutdown
