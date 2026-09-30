@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Search the QEMU guest RAM dump for kernel log_buf, exploit markers, and
-boot_id values.
+"""Search a QEMU guest RAM dump (QMP pmemsave) offline for the kernel boot log
+and exploit markers.
 
 Usage: qemu_read_ram.py [ram_file]
 
-The real device kernel has no PL011 serial driver, so all printk output goes
-to __log_buf in kernel .bss.  This script locates it by searching for known
-strings and dumps the surrounding text.
+Prefer tools/qemu-test/read_log.py for live reads (it chases the `log_buf`
+pointer and reads physical memory directly).  This script is for offline dumps
+of the whole 2GB image, e.g. captured with:
+  qmp-shell -c 'pmemsave val=0x40000000 size=0x80000000 filename=/tmp/guest_ram.bin'
 """
 import re
 import sys
@@ -35,15 +36,15 @@ def main():
     else:
         print('log_buf not found (kernel may not have booted yet)')
 
-    # --- exploit markers (written by mini_init) ---
+    # --- exploit markers (current CLI / wrapper) ---
     print('\n=== exploit markers ===')
-    for pat in [b'mini-init-stage1', b'mini-init-mounted', b'mini-init-done',
-                b'exit_status=', b'perf-kaslr base=', b'KASLR OK',
-                b'slide attempt', b'boot_id_before', b'boot_id_after']:
+    for pat in [b'init: ghostlock_exe[', b'perf-kaslr base=', b'KASLR OK',
+                b'slide ', b'bench:', b'root: ', b'glsh-proof',
+                b'boot_id raw=', b'Internal error', b'PASSED', b'FAILED']:
         ms = [m.start() for m in re.finditer(re.escape(pat), data)][:4]
         status = ', '.join(hex(x) for x in ms) if ms else 'NOT FOUND'
         print(f'  {pat.decode():28s} {status}')
-        if ms and pat in (b'exit_status=', b'perf-kaslr base='):
+        if ms and pat in (b'init: ghostlock_exe[', b'perf-kaslr base='):
             j = ms[0]
             print(f'    -> {data[max(0,j-40):j+80]}')
 
