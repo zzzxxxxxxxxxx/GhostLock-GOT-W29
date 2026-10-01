@@ -215,6 +215,12 @@ oops（`Internal error: Oops: 96000006`、`NULL pointer dereference at 0`、
 `__cmpwait`，整机停摆——**单次成功率虽高，但失败是致命的**：不能在同一 boot
 里重试，也不能把"10/10"当成保证。
 
+同一天用自动重开器具（`tools/qemu-test/run_rounds.py`，见其 README）补的样本：
+`--bench 10` 再跑 2 轮 + `--bench 30` 连跑 6 轮 = **210/210 全部成功**（8 次
+独立 boot，全程无丢行）。把这天所有模式合起来算，约 250 次 attempt 里出现
+3 次 oops——**约 1%**，比早先"每 5–10 个 attempt"的估计低一个量级（早期估计
+是在日志被 kmsg 限流吞掉一半的情况下得出的，偏悲观）。
+
 限流的真正闸门是 `printk.devkmsg`（用户态写 `/dev/kmsg` 的开关，
 `/proc/sys/kernel/printk_devkmsg`，默认 `ratelimit`），调 `printk_ratelimit*`
 没用——实测 `printk_ratelimit_state = {interval 0, burst 1000000}` 时仍每轮丢
@@ -222,7 +228,7 @@ oops（`Internal error: Oops: 96000006`、`NULL pointer dereference at 0`、
 `printk.devkmsg=on` 且 wrapper 里补写该 sysctl，之后日志一行不丢，可以重跑
 `--bench N` 拿准确数字。
 
-失败不是免费的：约每 5–10 个 attempt 会有一个的 fake waiter 被返回路径 clobber，
+失败不是免费的：实测约每 100 个 attempt 会有一个的 fake waiter 被返回路径 clobber，
 表现为 walk 中 oops（`Internal error … rt_mutex_adjust_prio_chain`，
 `exited with preempt_count 3`）；QEMU 里一次这样的失败会把整个 guest 带走
 （missed wakeup）。2026-10-01 复跑的 10 次 boot 里命中 3 次，具体签名是：oops
