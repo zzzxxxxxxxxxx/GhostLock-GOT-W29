@@ -64,6 +64,12 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
 = **210/210（100%）**，8 个独立 boot，日志无丢行；同一天所有模式合计约 250 次
 attempt 里 3 次 oops（≈1%），但这 3 次都把整机带走（见下）。
 
+initramfs 里还有一个 `glsh`（`glsh.c`）：设备有 `/system/bin/sh`，QEMU 里没有，
+broker 的通用命令行路径就测不到。`GLMODE="--su-selftest --shell /glsh"`
+可以让服务端 exec 这个最小 `sh -c`（支持 `id`/`echo`/`cat`），验证
+「客户端 → 服务端 → exec 子进程继承 root cred → 回读输出」整条链路；
+`--su-selftest` 现在也把这条算进 PASS 条件（设备上走 `/system/bin/sh`）。
+
 `--root` 期望（提权段同上，之后）：
 
 ```text
@@ -105,8 +111,29 @@ attempt 里 3 次 oops（≈1%），但这 3 次都把整机带走（见下）�
 - QEMU 使用 `nokaslr` + `--kaslr-base 0xffffff8008080800`；guest 默认
   `-smp 8`（`SMP=N` 可覆盖），与真机 8 核一致，也避免单核 TCG 下
   walk 卡死冻住整个 VM——多核时只烧掉一个 vCPU，attempt 超时后仍可重试。
-  需要 GDB 观测时 attach `:1234`（rt_mutex_adjust_prio_chain @ 0xffffff8008162d70、
+ 需要 GDB 观测时 attach `:1234`（rt_mutex_adjust_prio_chain @ 0xffffff8008162d70、
   rt_mutex_adjust_pi @ 0xffffff8008162c58、do_futex @ 0xffffff80081a5248）。
+
+  `KASLR=1 ./build_and_run.sh` 则**不开** `nokaslr`：wrapper 会读
+  `/proc/cmdline`，此时不再追加 `--kaslr-base`，让 exploit 自己 perf 泄露
+  slide（真机路径）。`glqemu.py` 随之做了 KASLR 地址换算：读 `memstart_addr`
+  把线性映射 VA 翻成物理地址（KASLR 会整体平移线性映射，`PAGE_OFFSET` 窗口
+  判断失效），读 `kimage_voffset` 得到镜像 slide 用于 vCPU PC 比对，所以
+  `read_log.py`/`run_rounds.py` 在 KASLR 开启时同样可用。
+  注意：TCG 下每次 perf 溢出都是一次 ~0.2–0.35ms 的 hrtimer 中断（guest 日志
+  里能看到 `hrtimer: interrupt took ... ns`），而 `perf_sample_ips()` 一轮要跑
+  400k 次触发、`main` 最多重试 5 轮，所以 KASLR-on 的泄露在 QEMU 里要跑很久
+  （实测**单轮 ~12 分钟** guest 时间）；这一环的权威验证仍在真机。
+
+  2026-10-01 实测（`KASLR=1 GLMODE="--verify-write"`）：TCG **能**采到内核 IP，
+  第一轮聚类给出的 slide 是 `0x1780e00000`，与独立从 `kimage_voffset` 算出的
+  真值**完全一致**；但 `perf_leak_stext()` 的验证段（要求 ≥3 个 IP 落在 15 个
+  内置符号各自 +0x40 范围内）得到 `ver=0`，于是判为
+  `perf slide cluster weak: best_n=2038 ver=0 ncand=22` 并返回 0。也就是说
+  QEMU 里卡住的不是采样、也不是聚类，而是**样本量太少 + 验证窗口太窄**
+  （真机一次能采到 27651 个样本，QEMU 一个 bin 只有 2038）。要让 KASLR-on 在
+  QEMU 里端到端跑通，得改验证判据（例如放宽为"slide 2MB 对齐 + 绝大多数 IP
+  落在 text 段 + 与符号表自洽"），而不是加大采样轮数。
 - **不要用 QMP `pmemsave` 频繁 dump 2GB 内存**：每次都会把 guest 暂停很久，
   容易把某个 attempt 的时序搅乱——实测有一次 restore attempt 的 fake waiter
   `lock` 词被覆盖成栈上地址，walk 卡在 `rt_mutex_adjust_prio_chain` 的

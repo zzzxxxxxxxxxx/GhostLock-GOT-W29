@@ -383,10 +383,13 @@ highbit=`0xffffff800b7a1228`（注意它按 **type** 而非 SID 置位，且写�
 
 客户端：`--rsh 'CMD'`（未提权进程即可用）。服务进程**永不退出**（退出会走
 悬空 `pi_blocked_on` 的 exit walk）。QEMU 无 shell，`--su-selftest` 自测
-只覆盖 STATUS/GLCAP/GLMOUNT/GLUMOUNT（足以证明 root cred 在 fork + socket
-往返中保持）。2026-10-01 复跑：干净 boot 上 `--su-selftest` 通过，退出码 0，
+覆盖 STATUS/GLCAP/GLMOUNT/GLUMOUNT 以及通用命令行路径（`id` 交给服务端的
+shell 跑，验证 exec 出去的子进程同样持 root cred；QEMU 里用
+`tools/qemu-test/glsh.c` 顶替 `/system/bin/sh`，真机走真 shell）。
+2026-10-01 复跑：干净 boot 上 `--su-selftest` 通过，退出码 0，
 `STATUS -> ok [uid=0 euid=0 gid=0 egid=0 cap_eff=cap_prm=0000007fffffffff
-ctx=kernel]`、`GLMOUNT … tmpfs -> rc=0`、`GLUMOUNT -> rc=0`。
+ctx=kernel]`、`GLMOUNT … tmpfs -> rc=0`、`GLUMOUNT -> rc=0`、
+`id -> ok [uid=0 euid=0 gid=0 egid=0]`。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的
