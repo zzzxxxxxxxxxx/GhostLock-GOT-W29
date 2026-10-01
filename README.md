@@ -421,7 +421,9 @@ adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
 hook 集：`rt_mutex_adjust_pi`（记录/重建 overlay）、
 `rt_mutex_adjust_prio_chain`（dump waiter）、`__arm64_sys_pselect6`/`do_select`
 （fd_set 观测）、`__arm64_sys_futex`（wait/requeue 追踪）、`rt_mutex_dequeue`
-（step[7] 确认）。加载方式见 `tools/kpm-debug`。
+（step[7] 确认）。加载方式见 `tools/kpm-debug/Makefile`（`make rtmutex_dbg.kpm`，
+需要 KernelPatch 源码树 `KP_DIR`）与 `sc_kpm_load.c`（supercall 加载器）、
+`run_rtmdbg_test.sh`（实机跑一轮并抓 `[RTMDBG]` 日志）。
 
 QEMU 启动 / kernel.patched（SCM+PAN 补丁）见 `firmware/README.md`；
 GDB 断点与内存读取工具：`tools/qemu_read_ram.py`、`tools/patch_kernel_qemu.sh`。

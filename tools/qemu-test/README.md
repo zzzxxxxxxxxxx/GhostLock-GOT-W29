@@ -14,7 +14,7 @@ GLMODE="--root"       ./build_and_run.sh    # 提权 + tmpfs/4755 端局自检
 ```sh
 ./build_and_run.sh          # 交叉编译 + 打包 initramfs + 启动 QEMU(-gdb/:1234)
 # 另开一个终端：
-./read_log.py               # 从内核 __log_buf 读 exploit 日志（GDB dump，轻量）
+./read_log.py               # 读内核 log_buf 里的 exploit 日志（QMP 物理读，轻量）
 ./read_log.py --wait 1200   # TCG 较慢时可以多等一会
 ```
 

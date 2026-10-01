@@ -43,6 +43,13 @@ def dm_phys(va):
     return MEMSTART + (va - PAGE_OFFSET)
 
 
+def temp_path():
+    """Private temp file path (QEMU writes it; mktemp() would race)."""
+    fd, path = tempfile.mkstemp(prefix="glqemu-")
+    os.close(fd)
+    return path
+
+
 class Guest:
     """One QEMU guest, addressed through its QMP unix socket."""
 
@@ -78,7 +85,7 @@ class Guest:
                          "arguments": {"command-line": command}}) or ""
 
     def pmem(self, addr, size):
-        path = tempfile.mktemp()
+        path = temp_path()
         try:
             self.cmd({"execute": "pmemsave",
                       "arguments": {"val": addr, "size": size,
@@ -104,7 +111,7 @@ class Guest:
     def log_text(self):
         """Log lines the harness cares about (PRINT), sorted and de-duplicated."""
         _, data = self.log_buffer()
-        path = tempfile.mktemp()
+        path = temp_path()
         try:
             with open(path, "wb") as fh:
                 fh.write(data)

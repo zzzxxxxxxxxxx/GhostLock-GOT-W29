@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """scan_carriers3: refine scan_getuser to syscall-reachable functions only.
 
-For every __arm64_sys_* we BFS the direct call graph (same loader as
-scan_carriers2), then for each reachable function containing str/stp to
+For every __arm64_sys_* we BFS the direct call graph (self-contained loader,
+successor of the dropped scan_carriers2.py), then for each reachable function containing str/stp to
 [sp+0x100..0x280], check whether the stored register's value can be traced
 back to an LDR from a register that was an ARGUMENT (x0-x5) of the function
 (aka 'user pointer -> loaded value -> deep stack slot').  Reports (fn, site,
