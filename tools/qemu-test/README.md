@@ -130,10 +130,15 @@ broker 的通用命令行路径就测不到。`GLMODE="--su-selftest --shell /gl
   真值**完全一致**；但 `perf_leak_stext()` 的验证段（要求 ≥3 个 IP 落在 15 个
   内置符号各自 +0x40 范围内）得到 `ver=0`，于是判为
   `perf slide cluster weak: best_n=2038 ver=0 ncand=22` 并返回 0。也就是说
-  QEMU 里卡住的不是采样、也不是聚类，而是**样本量太少 + 验证窗口太窄**
-  （真机一次能采到 27651 个样本，QEMU 一个 bin 只有 2038）。要让 KASLR-on 在
-  QEMU 里端到端跑通，得改验证判据（例如放宽为"slide 2MB 对齐 + 绝大多数 IP
-  落在 text 段 + 与符号表自洽"），而不是加大采样轮数。
+  QEMU 里卡住的不是采样、也不是聚类，而是那 15 个符号的窄验证窗口在 TCG 的
+  样本分布下命中不了（真机一次能采到 27651 个样本且能通过验证，QEMU 一个 bin
+  只有 2038/2941，两轮 `ver` 都是 0）。
+
+  **结论：不改 `perf_leak_stext()` 的判据。** 真机上这条链已经实测成功
+  （root README 的 `--escalate` 记录），QEMU 这里只是 TCG 采样分布的性质；
+  与其为了让 QEMU 通过而放宽判据、削弱真机上的安全性，不如让 QEMU 继续用
+  `nokaslr` + `--kaslr-base`。`KASLR=1` 只在需要单独排查泄露/映射本身时才用，
+  且要知道它会跑很久（≥12 分钟/轮）并且大概率停在这个验证段。
 - **不要用 QMP `pmemsave` 频繁 dump 2GB 内存**：每次都会把 guest 暂停很久，
   容易把某个 attempt 的时序搅乱——实测有一次 restore attempt 的 fake waiter
   `lock` 词被覆盖成栈上地址，walk 卡在 `rt_mutex_adjust_prio_chain` 的
