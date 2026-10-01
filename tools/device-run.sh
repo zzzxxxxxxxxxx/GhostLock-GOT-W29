@@ -14,8 +14,12 @@
 # known-denied operation; --su-server keeps a root broker alive for mounts and
 # shells (drive it with `ghostlock_exe --rsh 'CMD'` from another shell).
 #
-# Note: --root (and the standalone --harden) leaf-zero panic_on_oops first, so a
-# clobbered attempt cannot reboot the device if init set panic_on_oops=1.
+# Note: this device ships with panic_on_oops=1, so a clobbered attempt panics
+# instead of merely wedging a core -- and one failure already ends that boot, so
+# retrying inside it (--attempts N>1) is pointless.  --root (and the standalone
+# --harden) leaf-zero panic_on_oops first; only do that if the device does NOT
+# reboot by itself after a panic, otherwise the automatic reboot is the cleaner
+# recovery path (see README "安全边界").
 #
 # Safety: the exploit parks/stops itself after a consumed dangling pointer; do
 # NOT `kill -9` it (futex_exit_release would walk the dangling pi_blocked_on).
@@ -45,7 +49,7 @@ fi
 # Default: prove uid 0 end to end; --hold leaves the root child stopped rather
 # than exiting into futex_exit_release.
 ARGS="$*"
-[ -z "$ARGS" ] && ARGS="--escalate --no-rt --attempts 4 --hold"
+[ -z "$ARGS" ] && ARGS="--escalate --no-rt --attempts 1 --hold"
 
 sync
 : > "$LOG"

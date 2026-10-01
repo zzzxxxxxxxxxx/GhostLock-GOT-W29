@@ -237,8 +237,9 @@ request at ffffff800ce8bcf8`），oops 时 `preempt_count=3` 留下一把没释�
 自旋锁，随后 8 个 vCPU 全停在 `queued_spin_lock_slowpath` 的 `__cmpwait`
 循环（PC `0xffffff8008162b58`/`2b68`，锁字在 `X01`/`X25`，例如
 `0xffffffc07a18bcac`），日志停更——**同一个 boot 内重试救不回来，只能重开**。
-设备端对策：先用 `--harden` 清
-`panic_on_oops`、用 `--attempts` 控制重试次数、失败后看 dmesg 再决定是否继续。
+设备端对策：`--attempts 1`（真机 `panic_on_oops=1`，一次失败就结束这个 boot，
+重试没有意义），失败后重启再来；要不要用 `--harden` 清 `panic_on_oops` 取决于
+设备在 panic 后会不会自动重启，见下文"安全边界"。
 
 历史验证（均已注入，仅存档）：QEMU GDB 直写悬空 blk；实机 KPM 重建 overlay。
 
@@ -414,9 +415,23 @@ adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
 `kill -STOP`，清理优先重启。输出里若没有 `requeue=-1/35`（EDEADLK），改用
 `--probe-cycle` 重试（值持有环在部分固件上更稳）。
 
-失败 attempt 可能触发 oops：内核编译默认 `panic_on_oops=0`，但若华为 init
-把它置 1，设备会重启——先 `cat /proc/sys/kernel/panic_on_oops` 确认；需要时用
-`--harden`（或直接 `--root`，它会自动先做）leaf 零写把它清零。
+失败 attempt 可能触发 oops。**GOT-W29 真机的 `panic_on_oops=1`（实测）**，所以
+失败的 attempt 不是"卡一下"而是直接 panic；每次 attempt 的失败率约 1%，而一次
+`--escalate` 要跑 4–5 次写（comm 读、cred 写、修 gid、恢复 boot_id……），也就是
+**每次提权尝试大约几个百分点的概率会 panic**。
+
+接下来要问的是"panic 之后设备会不会自己重启"，这决定了要不要用 `--harden`：
+
+- 若会自动重启（看 `cat /proc/sys/kernel/panic`，非 0 就是 N 秒后重启；华为的
+  AP 看门狗也可能兜底）：panic 反而是**干净的恢复路径**——重启后悬空指针随进程
+  消失，重新来过即可。这种情况下**不要**清 `panic_on_oops`：清掉之后失败会变成
+  "8 核全卡死、要手动长按电源"的形态，比自动重启难受得多。
+- 若不会自动重启（panic 停在屏幕上）：两种形态都要人工断电，此时再考虑
+  `--harden`（或 `--root`，它会自动先做）leaf 零写清 `panic_on_oops`——注意
+  `--harden` 自己就是一次写原语尝试，同样吃那 ~1%。
+
+无论哪种情况，真机上都要用 `--attempts 1`：一次失败已经结束这个 boot，重试没有
+意义（`device-run.sh` 的默认值已按此改）。
 
 ## 调试工具链
 
