@@ -102,14 +102,19 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
   wakeup），此时同样只能重开。判别：`read_log.py` 长时间无新行 + `info threads`
   全是 halted。
 
-  2026-10-01 复跑时 5 次 boot 命中 2 次，`oops` 落在
+  2026-10-01 复跑的 10 次 boot 里命中 3 次，`oops` 落在
   `rt_mutex_adjust_prio_chain+0x338`；更精确的判别是直接读 vCPU 寄存器（无需
   GDB stub，QMP 里 `human-monitor-command` 跑 `cpu N` + `info registers`）：
   8 个 CPU 全停在 `0xffffff8008162b58`/`2b68`（`queued_spin_lock_slowpath`
   里的 `__cmpwait`：`ldxr/eor/cbnz/wfe`），且 `X01`（锁字地址）在 8 个核上
-  完全相同（例 `0xffffffc07a18bcac`）= oops 时留下的自旋锁没人释放。此时
-  `jiffies` 也不再前进（可用 QMP `pmemsave` 读 `jiffies` 两次对比，
-  `ffffff800b406980`）。**同一 boot 内重试无效**，直接重开。
+  完全相同（例 `0xffffffc07a18bcac`）= oops 时留下的自旋锁没人释放。
+  **同一 boot 内重试无效**，直接重开。
+
+  注意两个易踩的坑：(1) `jiffies` 在这种状态下**仍然按 HZ 正常前进**（实测
+  8 秒墙钟涨 2000 tick，HZ=250），不能拿它判别死机；(2) 健康空转时 8 个
+  vCPU 也会停在同一个 PC 上（实测 `0xffffff80080ab194`，某函数尾部的
+  `ret`），要看 PC 值是不是 `0x8162b58`/`2b68` 那个 `__cmpwait` 循环。
+  归根结底最省事的判据还是"日志长时间不新增 + PC 在 `__cmpwait`"。
 - `--root` 端局（tmpfs + 4755 payload）已在 8 核 QEMU 完整通过：uid 2000 执行
   `glsh` 返回 `euid=0`，wrapper 标记 `exited status=0x0 (SUCCESS)`。
 - **多 vCPU 的日志坑**：`-smp N>1` 时内核会按 CPU 数协商日志缓冲，把静态
