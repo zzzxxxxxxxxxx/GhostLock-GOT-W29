@@ -18,6 +18,26 @@ GLMODE="--root"       ./build_and_run.sh    # 提权 + tmpfs/4755 端局自检
 ./read_log.py --wait 1200   # TCG 较慢时可以多等一会
 ```
 
+长时间统计用自动重开器具（每轮一个干净 boot，卡死自动判死并重开，**不需要人
+守着**；和 `build_and_run.sh` 一样要在沙箱外跑）：
+
+```sh
+./run_rounds.py --mode "--bench 30" --rounds 6      # 6 个 boot x 30 次单 attempt 写
+./run_rounds.py --mode "--verify-all" --rounds 5 --stall 120
+./run_rounds.py --mode "--su-server" --rounds 1 --stall 0 --timeout 300   # 常驻模式
+```
+
+轮次结束的判据是 wrapper 的独立标记 `init: ghostlock_exe[<mode>] exited
+status=0x...`；若日志静默超过 `--stall` 秒（默认 90）且 `glqemu.Guest.wedge()`
+判定 8 个 vCPU 全停在 `__cmpwait`（见下"第二种失败模式"），该轮记为 `WEDGED` 并
+直接开下一轮。每轮产物落在 `--out`（默认 `/tmp/ghostlock-qemu`）：
+`round-NN.log`（过滤后的 exploit 日志）、`round-NN.raw`（1MB 内核日志缓冲原件，
+供事后 `strings` 查 oops）、`round-NN.console`（QEMU 自身输出），汇总写
+`report-<mode>.txt`。退出码为 0 仅当所有轮都 PASS。
+
+`glqemu.py` 是 `read_log.py` 与 `run_rounds.py` 共用的 QMP/日志读取层（追
+`log_buf`、抓 vCPU 寄存器、判 wedge），改内核地址常量只需改这一处。
+
 exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志直接进内核
 日志缓冲；`read_log.py` 走 QMP `pmemsave` 读**物理内存**（不受 vCPU 所处 EL 影响），
 并追 `log_buf` 指针取实际缓冲区（多 vCPU 时内核会把静态 `__log_buf` 换成按 CPU
@@ -39,6 +59,10 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
 
 `--bench` 期望：`bench: run i/N ok|FAIL` 逐行，最后
 `bench: x/N single-attempt writes succeeded (P%)`。
+
+2026-10-01 用 `run_rounds.py` 量到的结果：`--bench 10` x3 + `--bench 30` x6
+= **210/210（100%）**，8 个独立 boot，日志无丢行；同一天所有模式合计约 250 次
+attempt 里 3 次 oops（≈1%），但这 3 次都把整机带走（见下）。
 
 `--root` 期望（提权段同上，之后）：
 
