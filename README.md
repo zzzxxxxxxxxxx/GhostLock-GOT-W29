@@ -207,6 +207,14 @@ exec/setuid 需要真机验证（mrx 走 policydb.permissive_map + AVC 冲刷，
 ——后 2 轮与汇总行当时被内核 kmsg 限流吞掉（日志里可见
 `ghostlock_exe: 55 output lines suppressed due to ratelimiting`），因此这是下界。
 
+2026-10-01 用修好的日志复跑：`--bench 10` 是 **10/10（100%）**，逐轮
+`bench: run i/10 ok` 齐全、无丢行、exit 0；紧接着同一 shape 的
+`--bench 30` **第 1 轮就栽了**：attempt 1 里 fake waiter 被 clobber，walk
+oops（`Internal error: Oops: 96000006`、`NULL pointer dereference at 0`、
+`exited with preempt_count 3`），留下的自旋锁把 8 个 vCPU 全部拖进
+`__cmpwait`，整机停摆——**单次成功率虽高，但失败是致命的**：不能在同一 boot
+里重试，也不能把"10/10"当成保证。
+
 限流的真正闸门是 `printk.devkmsg`（用户态写 `/dev/kmsg` 的开关，
 `/proc/sys/kernel/printk_devkmsg`，默认 `ratelimit`），调 `printk_ratelimit*`
 没用——实测 `printk_ratelimit_state = {interval 0, burst 1000000}` 时仍每轮丢
@@ -217,7 +225,7 @@ exec/setuid 需要真机验证（mrx 走 policydb.permissive_map + AVC 冲刷，
 失败不是免费的：约每 5–10 个 attempt 会有一个的 fake waiter 被返回路径 clobber，
 表现为 walk 中 oops（`Internal error … rt_mutex_adjust_prio_chain`，
 `exited with preempt_count 3`）；QEMU 里一次这样的失败会把整个 guest 带走
-（missed wakeup）。2026-10-01 复跑时 5 次 boot 里命中 2 次，具体签名是：oops
+（missed wakeup）。2026-10-01 复跑的 10 次 boot 里命中 3 次，具体签名是：oops
 发生在 `rt_mutex_adjust_prio_chain+0x338`（例：`Unable to handle kernel paging
 request at ffffff800ce8bcf8`），oops 时 `preempt_count=3` 留下一把没释放的
 自旋锁，随后 8 个 vCPU 全停在 `queued_spin_lock_slowpath` 的 `__cmpwait`
