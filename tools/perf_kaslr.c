@@ -19,7 +19,9 @@
 #define STEXT_LINK 0xffffff8008080800ULL
 #define ETEXT_LINK 0xffffff8009e00000ULL
 
-/* text symbol RVAs (link addr - KIMAGE_TEXT_BASE), from boot.elf kallsyms */
+/* text symbol RVAs (link addr - KIMAGE_TEXT_BASE), from boot.elf kallsyms.
+   KEEP IN SYNC with exploit/ghostlock-source/src/perf.c:perf_sym_rvas[] --
+   this tool is built standalone and cannot include that header. */
 static const uint32_t sym_rvas[] = {
   0x0016b8,0x070510,0x070850,0x086258,0x0b0550,0x125248,0x127330,
   0x267ae0,0x274dc0,0x2e5a10,0x191ada8,0x1c23fb8,0x1c24098,0x1c27238,0x1c29dc0,
