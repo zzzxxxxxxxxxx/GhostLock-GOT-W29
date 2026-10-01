@@ -204,14 +204,26 @@ exec/setuid 需要真机验证（mrx 走 policydb.permissive_map + AVC 冲刷，
 ### 成功率与失败模式（QEMU 8 核实测）
 
 `--bench 8`（每轮独立、单 attempt、无重试的指针写）：可见的 **6/6 轮全部一次成功**
-——后 2 轮与汇总行被内核 kmsg 限流吞掉（日志里可见
-`ghostlock_exe: 55 output lines suppressed due to ratelimiting`），因此这是下界；
-harness 已把 `printk_ratelimit_burst` 调大，需要精确数字时重跑 `--bench N`。
+——后 2 轮与汇总行当时被内核 kmsg 限流吞掉（日志里可见
+`ghostlock_exe: 55 output lines suppressed due to ratelimiting`），因此这是下界。
+
+限流的真正闸门是 `printk.devkmsg`（用户态写 `/dev/kmsg` 的开关，
+`/proc/sys/kernel/printk_devkmsg`，默认 `ratelimit`），调 `printk_ratelimit*`
+没用——实测 `printk_ratelimit_state = {interval 0, burst 1000000}` 时仍每轮丢
+13–35 行（丢的正是各子项 `PASSED` 行）。QEMU 器具已改为 `-append` 带
+`printk.devkmsg=on` 且 wrapper 里补写该 sysctl，之后日志一行不丢，可以重跑
+`--bench N` 拿准确数字。
 
 失败不是免费的：约每 5–10 个 attempt 会有一个的 fake waiter 被返回路径 clobber，
 表现为 walk 中 oops（`Internal error … rt_mutex_adjust_prio_chain`，
-`exited with preempt_count 3`）；QEMU 里一次这样的失败曾把整个 guest 打成
-"全 vCPU idle、日志停更"（missed wakeup）。设备端对策：先用 `--harden` 清
+`exited with preempt_count 3`）；QEMU 里一次这样的失败会把整个 guest 带走
+（missed wakeup）。2026-10-01 复跑时 5 次 boot 里命中 2 次，具体签名是：oops
+发生在 `rt_mutex_adjust_prio_chain+0x338`（例：`Unable to handle kernel paging
+request at ffffff800ce8bcf8`），oops 时 `preempt_count=3` 留下一把没释放的
+自旋锁，随后 8 个 vCPU 全停在 `queued_spin_lock_slowpath` 的 `__cmpwait`
+循环（PC `0xffffff8008162b58`/`2b68`，锁字在 `X01`/`X25`，例如
+`0xffffffc07a18bcac`），日志停更——**同一个 boot 内重试救不回来，只能重开**。
+设备端对策：先用 `--harden` 清
 `panic_on_oops`、用 `--attempts` 控制重试次数、失败后看 dmesg 再决定是否继续。
 
 历史验证（均已注入，仅存档）：QEMU GDB 直写悬空 blk；实机 KPM 重建 overlay。
@@ -341,7 +353,9 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 mrx 风格的 `policydb.permissive_map` 备选地址：node=`0xffffff800b7a1220`、
 highbit=`0xffffff800b7a1228`（注意它按 **type** 而非 SID 置位，且写原语
 写不出任意小整数 startbit，一般不如 `initialized` 路线）。`--selinux-relax`
-在 QEMU 里只能证明两个叶写落地（guest 无策略），语义效果需真机确认。
+在 QEMU 里只能证明两个叶写落地（guest 无策略），语义效果需真机确认；
+2026-10-01 复跑：`--selinux-relax` 在干净 boot 上 attempt 1 通过，两个叶写
+`ok=1`（`avc=ffffff800b79c388 initialized=ffffff800c3b3002`），退出码 0。
 
 ### 常驻 root 通道（su server / broker，mrx-w09 移植）
 
@@ -356,7 +370,9 @@ highbit=`0xffffff800b7a1228`（注意它按 **type** 而非 SID 置位，且写�
 客户端：`--rsh 'CMD'`（未提权进程即可用）。服务进程**永不退出**（退出会走
 悬空 `pi_blocked_on` 的 exit walk）。QEMU 无 shell，`--su-selftest` 自测
 只覆盖 STATUS/GLCAP/GLMOUNT/GLUMOUNT（足以证明 root cred 在 fork + socket
-往返中保持）。
+往返中保持）。2026-10-01 复跑：干净 boot 上 `--su-selftest` 通过，退出码 0，
+`STATUS -> ok [uid=0 euid=0 gid=0 egid=0 cap_eff=cap_prm=0000007fffffffff
+ctx=kernel]`、`GLMOUNT … tmpfs -> rc=0`、`GLUMOUNT -> rc=0`。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的

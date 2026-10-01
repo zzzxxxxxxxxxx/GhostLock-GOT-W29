@@ -39,5 +39,5 @@ fi
 exec qemu-system-aarch64 -machine virt -no-reboot -cpu cortex-a76 -smp "${SMP:-8}" -m 2048 \
   -kernel firmware/unpacked_boot/kernel.patched \
   -initrd "$OUT/initramfs.cpio.gz" \
-  -append "nokaslr rdinit=/init console=ttyAMA0 panic=0 loglevel=6 initcall_blacklist=proc_app_info_init" \
+  -append "nokaslr rdinit=/init console=ttyAMA0 panic=0 loglevel=6 initcall_blacklist=proc_app_info_init printk.devkmsg=on" \
   -qmp unix:"$OUT/qmp.sock",server,nowait "${GDB_ARGS[@]}" -display none -no-shutdown

@@ -54,12 +54,21 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
 
 - `init_wrapper.c` 会挂载 `/proc` 和 `devtmpfs`、给 fd 0/1/2 补 `/dev/null`
   （QEMU 无控制台，否则 `pipe()` 会占用 fd 0/1）、关掉内核 printk 限流
-  （`printk_ratelimit=0`，否则最终结果行被 `output lines suppressed` 吞掉），
+  （`printk_ratelimit=0` + `printk_ratelimit_burst=1000000` +
+  `printk_devkmsg=on`，否则最终结果行被 `output lines suppressed` 吞掉），
   然后以 uid 2000 + 补充组 3003（`CONFIG_ANDROID_PARANOID_NETWORK` 要求
   inet 组才能建 AF_INET socket，真机 shell 同款）fork 出 exploit，并自己保持
   PID 1 存活；exploit 退出后 wrapper 会把退出码写进 `/dev/kmsg`
   （`init: ghostlock_exe exited status=... (SUCCESS)`），作为一个不受 exploit
   日志影响的独立判据。
+
+  **限流的真正闸门**（2026-10-01 实测）：用户态写 `/dev/kmsg` 由
+  `printk.devkmsg`（`/proc/sys/kernel/printk_devkmsg`，取值 `on`/`off`/
+  `ratelimit`，默认 `ratelimit`）控制，**不是** `printk_ratelimit*`。在
+  kernel.patched 上直接读内核里的 `printk_ratelimit_state` 确认
+  `interval=0, burst=1000000` 仍然每轮丢 13–35 行（丢掉的正是各子项
+  `PASSED` 行）。`build_and_run.sh` 的 `-append` 现在带
+  `printk.devkmsg=on`，wrapper 里也补写了该 sysctl；两者都能让日志一行不丢。
 - exploit 以 `--no-rt --attempts 4` 跑（设备 shell 拿不到 RT；walk 偶发卡在
   `rt_mutex_adjust_prio_chain` 的 `raw_spin_trylock` 重试循环，靠 attempt 重试）。
 - `carrier=-1/22`（EINVAL）是预期的：拷贝完成后 `ip_mc_source` 因假地址组失败；
@@ -92,6 +101,15 @@ exploit 用 `--log-file /dev/kmsg` 输出（wrapper 挂 `devtmpfs`），日志�
   已被打坏：实测整个 guest 变成所有 vCPU idle、父进程/ log 都不再前进（missed
   wakeup），此时同样只能重开。判别：`read_log.py` 长时间无新行 + `info threads`
   全是 halted。
+
+  2026-10-01 复跑时 5 次 boot 命中 2 次，`oops` 落在
+  `rt_mutex_adjust_prio_chain+0x338`；更精确的判别是直接读 vCPU 寄存器（无需
+  GDB stub，QMP 里 `human-monitor-command` 跑 `cpu N` + `info registers`）：
+  8 个 CPU 全停在 `0xffffff8008162b58`/`2b68`（`queued_spin_lock_slowpath`
+  里的 `__cmpwait`：`ldxr/eor/cbnz/wfe`），且 `X01`（锁字地址）在 8 个核上
+  完全相同（例 `0xffffffc07a18bcac`）= oops 时留下的自旋锁没人释放。此时
+  `jiffies` 也不再前进（可用 QMP `pmemsave` 读 `jiffies` 两次对比，
+  `ffffff800b406980`）。**同一 boot 内重试无效**，直接重开。
 - `--root` 端局（tmpfs + 4755 payload）已在 8 核 QEMU 完整通过：uid 2000 执行
   `glsh` 返回 `euid=0`，wrapper 标记 `exited status=0x0 (SUCCESS)`。
 - **多 vCPU 的日志坑**：`-smp N>1` 时内核会按 CPU 数协商日志缓冲，把静态

@@ -63,12 +63,18 @@ int main(void) {
   /* /dev/kmsg logging is ratelimited by default and the exploit logs a lot:
      the final result lines were suppressed in earlier runs
      ("ghostlock_exe: N output lines suppressed due to ratelimiting").
-     Note: interval=0 alone did NOT disable it on this Huawei kernel, so raise
-     the burst budget as well. */
+     The gate for *userspace* /dev/kmsg writes is printk.devkmsg
+     (/proc/sys/kernel/printk_devkmsg, "on"/"off"/"ratelimit"), not the
+     printk_ratelimit* sysctls: measured on kernel.patched with
+     printk_ratelimit_state = {interval 0, burst 1000000}, 13-35 lines per run
+     were still dropped.  build_and_run.sh also passes printk.devkmsg=on; this
+     write covers boots that do not.  The two printk_ratelimit* writes are kept
+     for kernels whose kmsg path does honour them. */
   const char *rl_files[] = {"/proc/sys/kernel/printk_ratelimit",
-                            "/proc/sys/kernel/printk_ratelimit_burst"};
-  const char *rl_vals[] = {"0\n", "1000000\n"};
-  for (int i = 0; i < 2; i++) {
+                            "/proc/sys/kernel/printk_ratelimit_burst",
+                            "/proc/sys/kernel/printk_devkmsg"};
+  const char *rl_vals[] = {"0\n", "1000000\n", "on\n"};
+  for (int i = 0; i < 3; i++) {
     int fd = open(rl_files[i], O_WRONLY);
     if (fd >= 0) {
       (void)!write(fd, rl_vals[i], strlen(rl_vals[i]));
