@@ -31,7 +31,8 @@ STATIC_LOG_BUF = 0xFFFFFF800B7599DC   # __log_buf (pre-negotiation)
 MAX_LOG = 4 * 1024 * 1024
 
 PRINT = re.compile(r"slide |escalate|perf task|root:|bench:|glsh-proof|PASSED"
-                   r"|FAILED|SUCCESS")
+                   r"|FAILED|SUCCESS|su selftest|selinux|harden|GLMOUNT"
+                   r"|GLUMOUNT|Unable to handle|Internal error|preempt_count")
 
 sock_path = "/tmp/ghostlock-qemu/qmp.sock"
 wait = 300.0
