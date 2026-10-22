@@ -47,7 +47,9 @@
 ### 触发前提
 
 - shell 权限：`adb shell` 或 Shizuku 均可。
-- 关闭华为两个后台管控服务，使 shell 进程拿到**根 cpuset**（否则触发链不会进入目标路径）：
+- GOT-W29 实测必须保持 PowerGenie 和 IAware 处于禁用状态：只要其中任一服务启用，
+  就无法稳定得到 `-EDEADLK` 悬空。该限制来自服务对触发线程调度窗口的干扰。
+  此条件是 GOT-W29 的实机触发前提，不是 CVE 的理论前提。
 
 ```sh
 pm disable-user com.huawei.powergenie
