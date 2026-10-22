@@ -4,9 +4,9 @@
  * init_cred -> getuid()==0, plus optional endgame / self tests.
  *
  * Modes come from /glmode (';'-separated command lines, e.g.
- * "--root; --bench 8"); build_and_run.sh writes it when GLMODE is set.
+ * "--simple-root --detach; --bench 8"); build_and_run.sh writes it when GLMODE is set.
  * Multiple groups run as separate children in one boot to amortize the slow
- * TCG boot.  Without /glmode the default is the --escalate flow.
+ * TCG boot.  Without /glmode the default is the A-route --simple-root flow.
  *
  * The kernel has no console on QEMU (GENI UART), so fds 0/1/2 may be closed;
  * give them /dev/null first, otherwise pipe() steals fd 0/1 and the child's
@@ -128,8 +128,9 @@ int main(void) {
     }
   }
   if (ngroups == 0) {
-    strcpy(groups[0][0], "--escalate");
-    gwords[0] = 1;
+    strcpy(groups[0][0], "--simple-root");
+    strcpy(groups[0][1], "--detach");
+    gwords[0] = 2;
     ngroups = 1;
   }
 

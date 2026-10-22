@@ -39,7 +39,7 @@ def main():
     # --- exploit markers (current CLI / wrapper) ---
     print('\n=== exploit markers ===')
     for pat in [b'init: ghostlock_exe[', b'perf-kaslr base=', b'KASLR OK',
-                b'slide ', b'bench:', b'root: ', b'glsh-proof',
+                b'slide ', b'bench:', b'simple-root',
                 b'boot_id raw=', b'Internal error', b'PASSED', b'FAILED']:
         ms = [m.start() for m in re.finditer(re.escape(pat), data)][:4]
         status = ', '.join(hex(x) for x in ms) if ms else 'NOT FOUND'

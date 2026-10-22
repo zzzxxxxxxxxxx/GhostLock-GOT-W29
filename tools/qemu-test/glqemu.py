@@ -34,7 +34,7 @@ WEDGE_PCS = (0xFFFFFF8008162B58, 0xFFFFFF8008162B68)
 
 DEFAULT_SOCK = "/tmp/ghostlock-qemu/qmp.sock"
 
-PRINT = re.compile(r"slide |escalate|perf task|root:|bench:|glsh-proof|PASSED"
+PRINT = re.compile(r"slide |simple-root|escalate|perf task|perf waiter|bench:|PASSED"
                    r"|FAILED|SUCCESS|su selftest|selinux|harden|GLMOUNT"
                    r"|GLUMOUNT|Unable to handle|Internal error|preempt_count")
 

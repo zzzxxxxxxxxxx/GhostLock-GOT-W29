@@ -3,7 +3,7 @@
 # (kernel.patched, nokaslr).  Usage: ./build_and_run.sh
 # Default mode: --escalate; override with GLMODE, e.g.
 #   GLMODE="--verify-all" ./build_and_run.sh
-#   GLMODE="--root; --bench 8" ./build_and_run.sh
+#   GLMODE="--simple-root --detach" ./build_and_run.sh
 #
 # Requires: aarch64-linux-gnu-gcc, qemu-system-aarch64, cpio, and
 # firmware/unpacked_boot/kernel.patched.  Read the result with read_log.py

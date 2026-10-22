@@ -48,10 +48,6 @@ int main(int argc, char **argv) {
            (int)getgid(), (int)getegid());
     return 0;
   }
-  if (!strcmp(cmd, "proof")) {
-    printf("glsh-proof: uid=%d euid=%d\n", (int)getuid(), (int)geteuid());
-    return 0;
-  }
   if (!strcmp(cmd, "echo")) {
     printf("%s\n", rest ? rest : "");
     return 0;

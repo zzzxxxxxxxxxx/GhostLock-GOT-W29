@@ -1,14 +1,14 @@
 # QEMU 验证器具（kernel.patched）
 
-把 exploit 作为 QEMU guest 的 `/init` 跑：默认 `--escalate`（端到端提权：
-perf 泄露自己 task → comm 校验 → cred 写 → `getuid()==0`），以 **uid 2000**
+把 exploit 作为 QEMU guest 的 `/init` 跑：默认
+`--simple-root --detach`（A 路线：uuid 读原语 → private root cred），以 **uid 2000**
 起跑模拟设备 shell。其它模式用 `GLMODE` 传（build_and_run.sh 会写进
 initramfs 的 `/glmode`，wrapper 读出后追加为 argv）：
 
 ```sh
 GLMODE="--verify-all" ./build_and_run.sh    # 指针写 + leaf + 读原语 + restore
 GLMODE="--bench 20"   ./build_and_run.sh    # 写原语单 attempt 成功率
-GLMODE="--root"       ./build_and_run.sh    # 提权 + tmpfs/4755 端局自检
+GLMODE="--simple-root --detach" ./build_and_run.sh  # A 路线
 ```
 
 ```sh
@@ -70,15 +70,15 @@ broker 的通用命令行路径就测不到。`GLMODE="--su-selftest --shell /gl
 「客户端 → 服务端 → exec 子进程继承 root cred → 回读输出」整条链路；
 `--su-selftest` 现在也把这条算进 PASS 条件（设备上走 `/system/bin/sh`）。
 
-`--root` 期望（提权段同上，之后）：
+`--simple-root --detach` 期望：
 
 ```text
-... [*] root: /data/local/tmp/glrt/glsh (from /proc/self/exe) mode 4755, exec as uid 2000...
-... [+] root: 4755 payload confirmed (uid 2000 -> euid 0)
+... [*] simple-root: setresuid(0,0,0)=0 errno=0 uid=0 euid=0
+... [+] simple-root: LEGAL ROOT uid=0 euid=0 ctx=kernel
+... init: ghostlock_exe[--simple-root] exited status=0x0 (SUCCESS)
 ```
 
-（QEMU initramfs 没有 shell，payload 退化为本程序自身 + `--glsh-proof`；
-设备上会取 `/system/bin/sh`，回读它以 euid 0 执行的 `id` 输出验证 `uid=0(`。）
+（QEMU 没有 SELinux policy，所以 ctx 显示 kernel；真机保持 `u:r:shell:s0`。）
 
 说明：
 
@@ -171,8 +171,6 @@ broker 的通用命令行路径就测不到。`GLMODE="--su-selftest --shell /gl
   vCPU 也会停在同一个 PC 上（实测 `0xffffff80080ab194`，某函数尾部的
   `ret`），要看 PC 值是不是 `0x8162b58`/`2b68` 那个 `__cmpwait` 循环。
   归根结底最省事的判据还是"日志长时间不新增 + PC 在 `__cmpwait`"。
-- `--root` 端局（tmpfs + 4755 payload）已在 8 核 QEMU 完整通过：uid 2000 执行
-  `glsh` 返回 `euid=0`，wrapper 标记 `exited status=0x0 (SUCCESS)`。
 - **多 vCPU 的日志坑**：`-smp N>1` 时内核会按 CPU 数协商日志缓冲，把静态
   `__log_buf` 换成动态分配的更大缓冲（8 核 = 1MB，`log_buf_len` 变量可见），
   且 GDB 在 vCPU 处于 EL0 时读内核 VA 会失败/返回空。`read_log.py` 因此改为
