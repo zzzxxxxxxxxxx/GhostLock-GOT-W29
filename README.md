@@ -294,7 +294,7 @@ AF_INET（QEMU 实测选项 43/44 均走 0x108 拷贝）。
 | `import_iovec` 族（readv/writev/...） | 浅 0x50 |
 | ppoll `stack_pps` | 深 0x240 且超数组容限 |
 | SCTP setsockopt opts 5/6/9 | 实测 0x158，太浅 |
-| 单值 `get_user` 深栈写 | `scan_carriers3.py` 84 个命中全是 printf varargs，无用户数据 |
+| 单值 `get_user` 深栈写 | 旧扫描器曾报 84 个命中，复核全是 printf varargs，无用户数据 |
 
 其余事实：
 
