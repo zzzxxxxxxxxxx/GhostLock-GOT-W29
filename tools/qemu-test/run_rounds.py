@@ -6,7 +6,7 @@ into that boot's initramfs) and watches the kernel log.  A round ends when the
 wrapper's independent marker shows up -- "init: ghostlock_exe[<mode>] exited
 status=0x..." -- or when the guest wedges: the log stops growing and every
 vCPU sits in queued_spin_lock_slowpath's __cmpwait loop on the same lock word,
-i.e. the clobbered walk oopsed and left a spinlock held (README "第二种失败
+i.e. the clobbered walk oopsed and left a spinlock held (TECHNICAL.md "第二种失败
 模式").  A wedged guest is killed and the next round starts by itself, which is
 the whole point: one clobbered attempt must cost one boot, not a whole
 campaign, and no longer needs a human watching for it.

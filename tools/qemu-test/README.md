@@ -135,7 +135,7 @@ broker 的通用命令行路径就测不到。`GLMODE="--su-selftest --shell /gl
   只有 2038/2941，两轮 `ver` 都是 0）。
 
   **结论：不改 `perf_leak_stext()` 的判据。** 真机上这条链已经实测成功
-  （root README 的 `--escalate` 记录），QEMU 这里只是 TCG 采样分布的性质；
+  （`TECHNICAL.md` 的 `--escalate` 记录），QEMU 这里只是 TCG 采样分布的性质；
   与其为了让 QEMU 通过而放宽判据、削弱真机上的安全性，不如让 QEMU 继续用
   `nokaslr` + `--kaslr-base`。`KASLR=1` 只在需要单独排查泄露/映射本身时才用，
   且要知道它会跑很久（≥12 分钟/轮）并且大概率停在这个验证段。

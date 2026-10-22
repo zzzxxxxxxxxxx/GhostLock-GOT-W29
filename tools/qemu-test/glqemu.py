@@ -29,7 +29,7 @@ MAX_LOG = 4 * 1024 * 1024
 MASK64 = (1 << 64) - 1
 
 # Where every vCPU ends up when the walk oopsed and left a spinlock held:
-# queued_spin_lock_slowpath's __cmpwait loop (README "第二种失败模式").
+# queued_spin_lock_slowpath's __cmpwait loop (TECHNICAL.md "第二种失败模式").
 WEDGE_PCS = (0xFFFFFF8008162B58, 0xFFFFFF8008162B68)
 
 DEFAULT_SOCK = "/tmp/ghostlock-qemu/qmp.sock"
